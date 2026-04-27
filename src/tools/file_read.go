@@ -32,7 +32,7 @@ const maxFileSize int64 = 1 * 1024 * 1024 * 1024
 type ReadFileRequest struct {
 	FilePath string `json:"file_path" jsonschema:"required,description=Absolute path to the file to read"`
 	Offset   int    `json:"offset" jsonschema:"description=Line to start from (0-indexed)"`
-	Limit    int    `json:"limit" jsonschema:"description=Max lines to return. Default 2000."`
+	Limit    int    `json:"limit" jsonschema:"description=Max lines to return. Default 2000. 0 lines means 2000 lines"`
 }
 
 // ReadFileResult is the output for the file read tool.
