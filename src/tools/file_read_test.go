@@ -17,8 +17,6 @@ func TestFileRead_Normal(t *testing.T) {
 
 	request := ReadFileRequest{
 		FilePath: "/Users/easyimpr/Desktop/cc-mini-go/src/tools/test/data/test.c",
-		Offset:   0,
-		Limit:    100,
 	}
 	jsons, _ := json.Marshal(request)
 	ctx := context.Background()
@@ -36,6 +34,7 @@ func TestFileRead_Normal(t *testing.T) {
 	if !strings.Contains(res.Content, "1\t") {
 		t.Errorf("Expected line number prefix, got: %s", res.Content[:min(50, len(res.Content))])
 	}
+	t.Logf("Result: %v", res.Content)
 }
 
 func TestFileRead_Binary(t *testing.T) {
