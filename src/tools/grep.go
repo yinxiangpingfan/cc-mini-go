@@ -173,7 +173,7 @@ func grepWithRipgrep(ctx context.Context, req *GrepRequest, path string) (*GrepR
 
 	// Execute command.
 	// 执行命令。
-	proc := exec.Command(cmd[0], cmd[1:]...)
+	proc := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
 	proc.Stderr = nil
 
 	output, err := proc.Output()
