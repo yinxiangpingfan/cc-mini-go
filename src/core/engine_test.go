@@ -2,6 +2,7 @@ package core
 
 import (
 	"cc_mini/src/config"
+	"cc_mini/src/tools"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,13 +16,20 @@ import (
 
 func TestSomething(t *testing.T) {
 	config, _ := config.NewConfig("../config/config.json")
+
+	// 导入所有工具
+	allTools, err := loadAllTools()
+	if err != nil {
+		t.Fatalf("加载工具失败: %v", err)
+	}
+
 	ec := EngineConfig{
 		Provider:     "openai",
 		Model:        config.Model,
 		APIKey:       config.APIKey,
 		BaseURL:      config.BaseUrl,
 		SystemPrompt: "你是一个有用的代码助手。可以执行工具修改文件内容，也可以回答问题",
-		Tools:        []tool.BaseTool{},
+		Tools:        allTools,
 	}
 	om, _ := NewOpenAIChatModel(context.Background(), config.APIKey, ec.Model, config.BaseUrl, "high")
 	if om == nil {
@@ -29,12 +37,12 @@ func TestSomething(t *testing.T) {
 	}
 	e, _ := NewEngine(context.Background(), &ec, om.model)
 	ctx := context.Background()
-	err := e.createAgent(ctx)
+	err = e.createAgent(ctx)
 	if err != nil {
 		t.Errorf("Failed to create agent: %v", err)
 	}
 
-	ch := e.Submit(ctx, "你好啊")
+	ch := e.Submit(ctx, "你好啊，帮我查一下engine.go的内容")
 	for {
 		ev, ok := <-ch
 		if !ok {
@@ -42,6 +50,43 @@ func TestSomething(t *testing.T) {
 		}
 		fmt.Println(ev)
 	}
+}
+
+// loadAllTools 创建所有可用的工具。
+func loadAllTools() ([]tool.BaseTool, error) {
+	readTool, err := tools.NewReadFileTool()
+	if err != nil {
+		return nil, fmt.Errorf("创建 Read 工具失败: %w", err)
+	}
+	writeTool, err := tools.NewWriteFileTool()
+	if err != nil {
+		return nil, fmt.Errorf("创建 Write 工具失败: %w", err)
+	}
+	editTool, err := tools.NewEditFileTool()
+	if err != nil {
+		return nil, fmt.Errorf("创建 Edit 工具失败: %w", err)
+	}
+	bashTool, err := tools.NewBashTool()
+	if err != nil {
+		return nil, fmt.Errorf("创建 Bash 工具失败: %w", err)
+	}
+	globTool, err := tools.NewGlobTool()
+	if err != nil {
+		return nil, fmt.Errorf("创建 Glob 工具失败: %w", err)
+	}
+	grepTool, err := tools.NewGrepTool()
+	if err != nil {
+		return nil, fmt.Errorf("创建 Grep 工具失败: %w", err)
+	}
+
+	return []tool.BaseTool{
+		readTool,
+		writeTool,
+		editTool,
+		bashTool,
+		globTool,
+		grepTool,
+	}, nil
 }
 
 // --- parseToolArgs ---
