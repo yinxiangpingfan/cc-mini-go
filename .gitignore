@@ -2,3 +2,5 @@ config.json
 .DS_Store
 
 config_claude.json
+
+.qoder
