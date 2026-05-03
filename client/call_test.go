@@ -16,7 +16,8 @@ func TestCall(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
-	res, resp, err := NewCallRequest(cl.httpClient, cl.baseUrl, cl.apiKey, config.Model, []Message{
+	cm := NewChatCompletionMessage()
+	res, resp, err := NewCallRequest(cl, cm, config.Model, []Message{
 		{Role: "user", Content: "你是谁"},
 	}, false, "你是一个奶龙")
 	if err != nil {
