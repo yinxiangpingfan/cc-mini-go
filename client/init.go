@@ -1,7 +1,8 @@
 package client
 
 import (
-	"http"
+	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/yinxiangpingfan/cc-mini-go/errors"
@@ -17,6 +18,11 @@ func Init(baseUrl string, apiKey string) (*ChatCompletionClient, error) {
 	//确认baseurl合法
 	if strings.HasPrefix(baseUrl, "http://") || strings.HasPrefix(baseUrl, "https://") {
 	} else {
-		return nil, errors.ErrInvalidBaseUrl
+		return nil, fmt.Errorf("%s", errors.ErrInvalidBaseUrl)
 	}
+	return &ChatCompletionClient{
+		baseUrl:    baseUrl,
+		apiKey:     apiKey,
+		httpClient: &http.Client{},
+	}, nil
 }
