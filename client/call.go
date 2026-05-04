@@ -21,15 +21,16 @@ func NewCall(cl *ChatCompletionClient, cm *ChatCompletionMessage) *Call {
 }
 
 // NewCallRequest creates a new call request to the OpenAI API.
-func (c *Call) NewCallRequest(model string, messages []Message, stream bool, system string, streamMessageFunc func(StreamResponse)) (CallResponse, *http.Response, error) {
+func (c *Call) NewCallRequest(model string, messages []Message, stream bool, system string, tools []Tool, streamMessageFunc func(StreamResponse)) (CallResponse, *http.Response, error) {
 	// If stream is true, use the newCallRequestWithStream method.
 	if stream {
-		return c.newCallRequestWithStream(model, messages, system, streamMessageFunc)
+		return c.newCallRequestWithStream(model, messages, system, tools, streamMessageFunc)
 	}
 	type openaiReq struct {
 		Model    string    `json:"model"`
 		Messages []Message `json:"messages"`
 		Stream   bool      `json:"stream"`
+		Tools    []Tool    `json:"tools,omitempty"`
 	}
 	systemMsg := make([]Message, 1)
 	systemMsg[0] = *c.cm.NewSystemMessage(system)
@@ -37,6 +38,7 @@ func (c *Call) NewCallRequest(model string, messages []Message, stream bool, sys
 		Model:    model,
 		Messages: append(systemMsg, messages...),
 		Stream:   stream,
+		Tools:    tools,
 	}
 	reqBodyJson, err := json.Marshal(reqBody)
 	if err != nil {
@@ -64,11 +66,12 @@ func (c *Call) NewCallRequest(model string, messages []Message, stream bool, sys
 }
 
 // newCallRequestWithStream creates a new call request to the OpenAI API with streaming enabled.
-func (c *Call) newCallRequestWithStream(model string, messages []Message, system string, onMessage func(StreamResponse)) (CallResponse, *http.Response, error) {
+func (c *Call) newCallRequestWithStream(model string, messages []Message, system string, tools []Tool, onMessage func(StreamResponse)) (CallResponse, *http.Response, error) {
 	type openaiReq struct {
 		Model    string    `json:"model"`
 		Messages []Message `json:"messages"`
 		Stream   bool      `json:"stream"`
+		Tools    []Tool    `json:"tools,omitempty"`
 	}
 	systemMsg := make([]Message, 1)
 	systemMsg[0] = *c.cm.NewSystemMessage(system)
@@ -76,6 +79,7 @@ func (c *Call) newCallRequestWithStream(model string, messages []Message, system
 		Model:    model,
 		Messages: append(systemMsg, messages...),
 		Stream:   true,
+		Tools:    tools,
 	}
 	reqBodyJson, err := json.Marshal(reqBody)
 	if err != nil {

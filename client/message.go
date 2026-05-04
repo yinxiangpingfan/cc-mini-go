@@ -14,10 +14,35 @@ type Message struct {
 //============================Request=====================================
 
 type CallRequest struct {
-	Model    string    `json:"model"`
-	Messages []Message `json:"messages"`
-	Stream   bool      `json:"stream"`
-	System   string    `json:"system,omitempty"`
+	Model      string      `json:"model"`
+	Messages   []Message   `json:"messages"`
+	Stream     bool        `json:"stream"`
+	Tools      []Tool      `json:"tools,omitempty"`
+	ToolChoice interface{} `json:"tool_choice,omitempty"` // "none"|"auto"|"required" 或 NamedToolChoice
+}
+
+type Tool struct {
+	Type     string             `json:"type"` // "function"
+	Function FunctionDefinition `json:"function"`
+}
+
+type FunctionDefinition struct {
+	Name        string             `json:"name"`
+	Description string             `json:"description,omitempty"`
+	Parameters  FunctionParameters `json:"parameters,omitempty"`
+	Strict      bool               `json:"strict,omitempty"`
+}
+
+type FunctionParameters struct {
+	Type       string                       `json:"type"` // "object"
+	Properties map[string]ParameterProperty `json:"properties,omitempty"`
+	Required   []string                     `json:"required,omitempty"`
+}
+
+type ParameterProperty struct {
+	Type        string   `json:"type"`
+	Description string   `json:"description,omitempty"`
+	Enum        []string `json:"enum,omitempty"`
 }
 
 //============================DefaultResponse=============================
