@@ -47,6 +47,29 @@ type ResponseMessage struct {
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 }
 
+//============================StreamResponse==============================
+
+type StreamResponse struct {
+	Id                string         `json:"id"`
+	Object            string         `json:"object"`
+	Created           int64          `json:"created"`
+	Model             string         `json:"model"`
+	Choices           []StreamChoice `json:"choices"`
+	SystemFingerprint string         `json:"system_fingerprint,omitempty"`
+}
+
+type StreamChoice struct {
+	Index        int         `json:"index"`
+	Delta        StreamDelta `json:"delta"`
+	Logprobs     any         `json:"logprobs"`
+	FinishReason string      `json:"finish_reason"`
+}
+
+type StreamDelta struct {
+	Role    string `json:"role,omitempty"`
+	Content string `json:"content,omitempty"`
+}
+
 type ToolCall struct {
 	Id       string       `json:"id"`
 	Type     string       `json:"type"`
