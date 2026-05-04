@@ -72,6 +72,23 @@ type ResponseMessage struct {
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 }
 
+type ToolCall struct {
+	Id       string       `json:"id"`
+	Type     string       `json:"type"`
+	Function FunctionCall `json:"function"`
+}
+
+type FunctionCall struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+type Usage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+}
+
 //============================StreamResponse==============================
 
 type StreamResponse struct {
@@ -91,25 +108,34 @@ type StreamChoice struct {
 }
 
 type StreamDelta struct {
-	Role    string `json:"role,omitempty"`
-	Content string `json:"content,omitempty"`
+	Role             string           `json:"role,omitempty"`
+	Content          string           `json:"content,omitempty"`
+	ReasoningContent string           `json:"reasoning_content,omitempty"`
+	ToolCalls        []StreamToolCall `json:"tool_calls,omitempty"`
 }
 
-type ToolCall struct {
-	Id       string       `json:"id"`
-	Type     string       `json:"type"`
-	Function FunctionCall `json:"function"`
+type StreamToolCall struct {
+	Index    int             `json:"index"`
+	Type     string          `json:"type,omitempty"`
+	Id       *string         `json:"id,omitempty"`
+	Function *StreamFunction `json:"function"`
 }
 
-type FunctionCall struct {
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"`
+type StreamFunction struct {
+	Name      *string `json:"name,omitempty"`
+	Arguments *string `json:"arguments,omitempty"`
 }
 
-type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+type ToolCallChunk struct {
+	Index    int                `json:"index"`        // 唯一必须存在的字段
+	ID       *string            `json:"id,omitempty"` // 使用指针处理 null 或未传
+	Type     *string            `json:"type,omitempty"`
+	Function *FunctionCallChunk `json:"function,omitempty"` // 指向具体 function 对象的指针
+}
+
+type FunctionCallChunk struct {
+	Name      *string `json:"name,omitempty"`      // 函数名
+	Arguments *string `json:"arguments,omitempty"` // 参数的增量字符串
 }
 
 func (m *ChatCompletionMessage) NewSystemMessage(content string) *Message {
