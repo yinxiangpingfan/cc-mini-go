@@ -71,11 +71,11 @@ func TestCallWithTool(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
-	tool := tools.TimeNowTool()
+	tool := tools.NewTools()
 	cm := client.NewChatCompletionMessage()
 	res, resp, err := client.NewCall(cl, cm).NewCallRequest(config.Model, []client.Message{
 		{Role: "user", Content: "你好，我在东京现在几点了"},
-	}, false, prompt.SystemPrompt, []client.Tool{tool}, nil)
+	}, false, prompt.SystemPrompt, []client.Tool{tool.TimeNowTool()}, nil)
 	if err != nil {
 		if errors.Is(err, io.EOF) {
 			t.Log("Stream completed")
@@ -89,7 +89,7 @@ func TestCallWithTool(t *testing.T) {
 			t.Log("Tool call: ", res.Choices[0].Message.ToolCalls[0].Function.Arguments)
 			var args map[string]interface{}
 			json.Unmarshal([]byte(res.Choices[0].Message.ToolCalls[0].Function.Arguments), &args)
-			res, err := tools.TimeNowToolUse(args)
+			res, err := tool.TimeNowToolUse(args)
 			if err != nil {
 				t.Error(err)
 			}
@@ -110,12 +110,12 @@ func TestCallWithToolStream(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
-	tool := tools.TimeNowTool()
+	tool := tools.NewTools()
 	cm := client.NewChatCompletionMessage()
 	activeToolCalls := make(map[int]*client.StreamToolCall)
 	res, resp, err := client.NewCall(cl, cm).NewCallRequest(config.Model, []client.Message{
 		{Role: "user", Content: "你好，现在东京几点"},
-	}, true, prompt.SystemPrompt, []client.Tool{tool}, func(sr client.StreamResponse) {
+	}, true, prompt.SystemPrompt, []client.Tool{tool.TimeNowTool()}, func(sr client.StreamResponse) {
 		if sr.Choices[0].Delta.Content != "" {
 			fmt.Print(sr.Choices[0].Delta.Content)
 		}
@@ -168,7 +168,7 @@ func TestCallWithToolStream(t *testing.T) {
 			t.Log("Tool call: ", *activeCall.Function.Arguments)
 			var args map[string]interface{}
 			json.Unmarshal([]byte(*activeCall.Function.Arguments), &args)
-			res, err := tools.TimeNowToolUse(args)
+			res, err := tool.TimeNowToolUse(args)
 			if err != nil {
 				t.Error(err)
 			}
