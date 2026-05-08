@@ -10,13 +10,13 @@ import (
 
 type Call struct {
 	cl *ChatCompletionClient
-	cm *ChatCompletionMessage
+	Cm *ChatCompletionMessage
 }
 
 func NewCall(cl *ChatCompletionClient, cm *ChatCompletionMessage) *Call {
 	return &Call{
 		cl: cl,
-		cm: cm,
+		Cm: cm,
 	}
 }
 
@@ -33,7 +33,7 @@ func (c *Call) NewCallRequest(model string, messages []Message, stream bool, sys
 		Tools    []Tool    `json:"tools,omitempty"`
 	}
 	systemMsg := make([]Message, 1)
-	systemMsg[0] = *c.cm.NewSystemMessage(system)
+	systemMsg[0] = *c.Cm.NewSystemMessage(system)
 	reqBody := openaiReq{
 		Model:    model,
 		Messages: append(systemMsg, messages...),
@@ -74,7 +74,7 @@ func (c *Call) newCallRequestWithStream(model string, messages []Message, system
 		Tools    []Tool    `json:"tools,omitempty"`
 	}
 	systemMsg := make([]Message, 1)
-	systemMsg[0] = *c.cm.NewSystemMessage(system)
+	systemMsg[0] = *c.Cm.NewSystemMessage(system)
 	reqBody := openaiReq{
 		Model:    model,
 		Messages: append(systemMsg, messages...),

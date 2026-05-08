@@ -21,19 +21,19 @@ func timeNow(region string) (string, error) {
 	return now.Format("2006-01-02 15:04:05"), nil
 }
 
-func (t *tools) TimeNowToolUse(args map[string]interface{}) (string, error) {
+func (t Tools) TimeNowToolUse(args map[string]interface{}) (string, error) {
 	region, exists := args["region"]
 	if !exists {
-		return "", fmt.Errorf(errors.ErrToolFunctionCall, "region")
+		return "", fmt.Errorf(errors.ErrToolFunctionCall, "缺少必填参数", "region")
 	}
 	res, err := timeNow(region.(string))
 	if err != nil {
-		return "", fmt.Errorf(errors.ErrToolFunctionCall, "region")
+		return "", fmt.Errorf(errors.ErrToolFunctionCall, err.Error(), "region")
 	}
-	return res, nil
+	return fmt.Sprintf("{\"time\": \"%s\"}", res), nil
 }
 
-func (t *tools) TimeNowTool() client.Tool {
+func (t *Tools) TimeNowTool() client.Tool {
 	return client.Tool{
 		Type: "function",
 		Function: client.FunctionDefinition{

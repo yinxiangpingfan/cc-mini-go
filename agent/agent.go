@@ -3,22 +3,36 @@ package agent
 import (
 	"github.com/yinxiangpingfan/cc-mini-go/client"
 	"github.com/yinxiangpingfan/cc-mini-go/config"
+	"github.com/yinxiangpingfan/cc-mini-go/tools"
 )
 
 type ChatCompletionAgent struct {
-	cm   *client.ChatCompletionMessage
-	cl   *client.ChatCompletionClient
-	call *client.Call
+	cf    *config.Config
+	call  *client.Call
+	tools *tools.Tools
 }
 
-func NewChatCompletionAgent(cm *client.ChatCompletionMessage, cl *client.ChatCompletionClient, call *client.Call, config *config.Config) *ChatCompletionAgent {
+func NewChatCompletionAgent(cf *config.Config, call *client.Call, tools *tools.Tools) *ChatCompletionAgent {
 	return &ChatCompletionAgent{
-		cm:   cm,
-		cl:   cl,
-		call: call,
+		cf:    cf,
+		call:  call,
+		tools: tools,
 	}
 }
 
-func (a *ChatCompletionAgent) Chat() (string, error) {
-	return "", nil // TODO: implement me
+// 非流式对话请求
+func (a *ChatCompletionAgent) Agent(messages []client.Message, system string) (string, error) {
+	tools := make([]client.Tool, 0)
+	for {
+		res, resp, err := a.call.NewCallRequest(a.cf.Model, messages, false, system, tools, nil)
+		if resp.StatusCode != 200 {
+			//TODO:处理错误值
+			return "", err
+		}
+		//判断是否有工具调用
+		if len(res.Choices[0].Message.ToolCalls) > 0 {
+			res := a.toolsUse(res.Choices[0].Message.ToolCalls)
+		}
+	}
+	return "", nil
 }

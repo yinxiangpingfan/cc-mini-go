@@ -1,8 +1,8 @@
 package tools
 
-type tools struct {
+type Tools struct {
 }
 
-func NewTools() *tools {
-	return &tools{}
+func NewTools() *Tools {
+	return &Tools{}
 }

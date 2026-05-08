@@ -11,6 +11,12 @@ type Message struct {
 	Content any    `json:"content"`
 }
 
+type ToolsMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+	ToolsId string `json:"tool_call_id"`
+}
+
 //============================Request=====================================
 
 type CallRequest struct {
@@ -149,5 +155,13 @@ func (m *ChatCompletionMessage) NewUserMessage(content string) *Message {
 	return &Message{
 		Role:    "user",
 		Content: content,
+	}
+}
+
+func (m *ChatCompletionMessage) NewToolsMessage(toolsId string, content string) *ToolsMessage {
+	return &ToolsMessage{
+		Role:    "tool",
+		Content: content,
+		ToolsId: toolsId,
 	}
 }
