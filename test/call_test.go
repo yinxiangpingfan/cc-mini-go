@@ -9,6 +9,7 @@ import (
 
 	"github.com/yinxiangpingfan/cc-mini-go/client"
 	"github.com/yinxiangpingfan/cc-mini-go/config"
+	"github.com/yinxiangpingfan/cc-mini-go/log"
 	"github.com/yinxiangpingfan/cc-mini-go/prompt"
 	"github.com/yinxiangpingfan/cc-mini-go/tools"
 )
@@ -24,8 +25,9 @@ func TestCall(t *testing.T) {
 		t.Error(err)
 	}
 	cm := client.NewChatCompletionMessage()
-	res, resp, err := client.NewCall(cl, cm).NewCallRequest(config.Model, []client.Message{
-		{Role: "user", Content: "你可以干啥"},
+	log := log.InitLogger()
+	res, resp, err := client.NewCall(cl, cm, log).NewCallRequest(config.Model, []any{
+		client.Message{Role: "user", Content: "你可以干啥"},
 	}, false, prompt.SystemPrompt, nil, nil)
 	if err != nil {
 		t.Error(err)
@@ -45,8 +47,9 @@ func TestCallStream(t *testing.T) {
 		t.Error(err)
 	}
 	cm := client.NewChatCompletionMessage()
-	res, resp, err := client.NewCall(cl, cm).NewCallRequest(config.Model, []client.Message{
-		{Role: "user", Content: "你好，你可以干啥"},
+	log := log.InitLogger()
+	res, resp, err := client.NewCall(cl, cm, log).NewCallRequest(config.Model, []any{
+		client.Message{Role: "user", Content: "你好，你可以干啥"},
 	}, true, prompt.SystemPrompt, nil, func(sr client.StreamResponse) {
 		fmt.Println(sr)
 	})
@@ -71,11 +74,12 @@ func TestCallWithTool(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
-	tool := tools.TimeNowTool()
+	tool := tools.NewTimeNowTool()
 	cm := client.NewChatCompletionMessage()
-	res, resp, err := client.NewCall(cl, cm).NewCallRequest(config.Model, []client.Message{
-		{Role: "user", Content: "你好，我在东京现在几点了"},
-	}, false, prompt.SystemPrompt, []client.Tool{tool}, nil)
+	log := log.InitLogger()
+	res, resp, err := client.NewCall(cl, cm, log).NewCallRequest(config.Model, []any{
+		client.Message{Role: "user", Content: "你好，我在东京现在几点了"},
+	}, false, prompt.SystemPrompt, []client.Tool{tool.TimeNowInfoForLLm()}, nil)
 	if err != nil {
 		if errors.Is(err, io.EOF) {
 			t.Log("Stream completed")
@@ -85,14 +89,11 @@ func TestCallWithTool(t *testing.T) {
 	}
 	if len(res.Choices[0].Message.ToolCalls) > 0 {
 		switch res.Choices[0].Message.ToolCalls[0].Function.Name {
-		case "time_now":
+		case tool.Name:
 			t.Log("Tool call: ", res.Choices[0].Message.ToolCalls[0].Function.Arguments)
 			var args map[string]interface{}
 			json.Unmarshal([]byte(res.Choices[0].Message.ToolCalls[0].Function.Arguments), &args)
-			res, err := tools.TimeNowToolUse(args)
-			if err != nil {
-				t.Error(err)
-			}
+			res := tool.Func(args)
 			t.Log("Tool call result: ", res)
 		}
 	}
@@ -110,12 +111,13 @@ func TestCallWithToolStream(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
-	tool := tools.TimeNowTool()
+	tool := tools.NewTimeNowTool()
 	cm := client.NewChatCompletionMessage()
 	activeToolCalls := make(map[int]*client.StreamToolCall)
-	res, resp, err := client.NewCall(cl, cm).NewCallRequest(config.Model, []client.Message{
-		{Role: "user", Content: "你好，现在东京几点"},
-	}, true, prompt.SystemPrompt, []client.Tool{tool}, func(sr client.StreamResponse) {
+	log := log.InitLogger()
+	res, resp, err := client.NewCall(cl, cm, log).NewCallRequest(config.Model, []any{
+		client.Message{Role: "user", Content: "你好，现在东京几点"},
+	}, true, prompt.SystemPrompt, []client.Tool{tool.TimeNowInfoForLLm()}, func(sr client.StreamResponse) {
 		if sr.Choices[0].Delta.Content != "" {
 			fmt.Print(sr.Choices[0].Delta.Content)
 		}
@@ -168,10 +170,7 @@ func TestCallWithToolStream(t *testing.T) {
 			t.Log("Tool call: ", *activeCall.Function.Arguments)
 			var args map[string]interface{}
 			json.Unmarshal([]byte(*activeCall.Function.Arguments), &args)
-			res, err := tools.TimeNowToolUse(args)
-			if err != nil {
-				t.Error(err)
-			}
+			res := tool.Func(args)
 			t.Log("Tool call result: ", res)
 		}
 	}

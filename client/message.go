@@ -11,11 +11,17 @@ type Message struct {
 	Content any    `json:"content"`
 }
 
+type ToolsMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+	ToolsId string `json:"tool_call_id"`
+}
+
 //============================Request=====================================
 
 type CallRequest struct {
 	Model      string      `json:"model"`
-	Messages   []Message   `json:"messages"`
+	Messages   []any       `json:"messages"`
 	Stream     bool        `json:"stream"`
 	Tools      []Tool      `json:"tools,omitempty"`
 	ToolChoice interface{} `json:"tool_choice,omitempty"` // "none"|"auto"|"required" 或 NamedToolChoice
@@ -67,7 +73,7 @@ type Choice struct {
 
 type ResponseMessage struct {
 	Role      string     `json:"role"`
-	Content   string     `json:"content"`
+	Content   any        `json:"content"`
 	Refusal   string     `json:"refusal,omitempty"`
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 }
@@ -148,6 +154,29 @@ func (m *ChatCompletionMessage) NewSystemMessage(content string) *Message {
 func (m *ChatCompletionMessage) NewUserMessage(content string) *Message {
 	return &Message{
 		Role:    "user",
+		Content: content,
+	}
+}
+
+func (m *ChatCompletionMessage) NewToolsCall(content any, call []ToolCall) *ResponseMessage {
+	return &ResponseMessage{
+		Role:      "assistant",
+		Content:   content,
+		ToolCalls: call,
+	}
+}
+
+func (m *ChatCompletionMessage) NewToolsMessage(toolsId string, content string) *ToolsMessage {
+	return &ToolsMessage{
+		Role:    "tool",
+		Content: content,
+		ToolsId: toolsId,
+	}
+}
+
+func (m *ChatCompletionMessage) NewAssistantMessage(content string) *Message {
+	return &Message{
+		Role:    "assistant",
 		Content: content,
 	}
 }

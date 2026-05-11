@@ -5,40 +5,38 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 )
 
 type Call struct {
-	cl *ChatCompletionClient
-	cm *ChatCompletionMessage
+	cl  *ChatCompletionClient
+	Cm  *ChatCompletionMessage
+	log *slog.Logger
 }
 
-func NewCall(cl *ChatCompletionClient, cm *ChatCompletionMessage) *Call {
+func NewCall(cl *ChatCompletionClient, cm *ChatCompletionMessage, log *slog.Logger) *Call {
 	return &Call{
-		cl: cl,
-		cm: cm,
+		cl:  cl,
+		Cm:  cm,
+		log: log,
 	}
 }
 
 // NewCallRequest creates a new call request to the OpenAI API.
-func (c *Call) NewCallRequest(model string, messages []Message, stream bool, system string, tools []Tool, streamMessageFunc func(StreamResponse)) (CallResponse, *http.Response, error) {
+func (c *Call) NewCallRequest(model string, messages []any, stream bool, system string, tools []Tool, streamMessageFunc func(StreamResponse)) (CallResponse, *http.Response, error) {
 	// If stream is true, use the newCallRequestWithStream method.
 	if stream {
 		return c.newCallRequestWithStream(model, messages, system, tools, streamMessageFunc)
 	}
-	type openaiReq struct {
-		Model    string    `json:"model"`
-		Messages []Message `json:"messages"`
-		Stream   bool      `json:"stream"`
-		Tools    []Tool    `json:"tools,omitempty"`
-	}
-	systemMsg := make([]Message, 1)
-	systemMsg[0] = *c.cm.NewSystemMessage(system)
-	reqBody := openaiReq{
-		Model:    model,
-		Messages: append(systemMsg, messages...),
-		Stream:   stream,
-		Tools:    tools,
+	allMsgs := make([]any, 0, 1+len(messages))
+	allMsgs = append(allMsgs, *c.Cm.NewSystemMessage(system))
+	reqBody := CallRequest{
+		Model:      model,
+		Messages:   append(allMsgs, messages...),
+		Stream:     stream,
+		Tools:      tools,
+		ToolChoice: "auto",
 	}
 	reqBodyJson, err := json.Marshal(reqBody)
 	if err != nil {
@@ -66,20 +64,21 @@ func (c *Call) NewCallRequest(model string, messages []Message, stream bool, sys
 }
 
 // newCallRequestWithStream creates a new call request to the OpenAI API with streaming enabled.
-func (c *Call) newCallRequestWithStream(model string, messages []Message, system string, tools []Tool, onMessage func(StreamResponse)) (CallResponse, *http.Response, error) {
+func (c *Call) newCallRequestWithStream(model string, messages []any, system string, tools []Tool, onMessage func(StreamResponse)) (CallResponse, *http.Response, error) {
 	type openaiReq struct {
-		Model    string    `json:"model"`
-		Messages []Message `json:"messages"`
-		Stream   bool      `json:"stream"`
-		Tools    []Tool    `json:"tools,omitempty"`
+		Model    string `json:"model"`
+		Messages []any  `json:"messages"`
+		Stream   bool   `json:"stream"`
+		Tools    []Tool `json:"tools,omitempty"`
 	}
-	systemMsg := make([]Message, 1)
-	systemMsg[0] = *c.cm.NewSystemMessage(system)
-	reqBody := openaiReq{
-		Model:    model,
-		Messages: append(systemMsg, messages...),
-		Stream:   true,
-		Tools:    tools,
+	allMsgs := make([]any, 0, 1+len(messages))
+	allMsgs = append(allMsgs, *c.Cm.NewSystemMessage(system))
+	reqBody := CallRequest{
+		Model:      model,
+		Messages:   append(allMsgs, messages...),
+		Stream:     true,
+		Tools:      tools,
+		ToolChoice: "auto",
 	}
 	reqBodyJson, err := json.Marshal(reqBody)
 	if err != nil {
@@ -90,6 +89,7 @@ func (c *Call) newCallRequestWithStream(model string, messages []Message, system
 	if err != nil {
 		return CallResponse{}, nil, err
 	}
+
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.cl.apiKey)
 	resp, err := c.cl.httpClient.Do(req)

@@ -8,7 +8,25 @@ import (
 	"github.com/yinxiangpingfan/cc-mini-go/errors"
 )
 
-func TimeNow(region string) (string, error) {
+func NewTimeNowTool() *Tools {
+	timeNowToolUse := func(args map[string]interface{}) string {
+		region, exists := args["region"]
+		if !exists {
+			return fmt.Sprintf("{\"error\": \"%s\"}", fmt.Sprintf(errors.ErrToolFunctionCall, "region"))
+		}
+		res, err := timeNow(region.(string))
+		if err != nil {
+			return fmt.Sprintf("{\"error\": \"%s\"}", fmt.Sprintf(errors.ErrToolFunctionCall, "region"))
+		}
+		return fmt.Sprintf("{\"time\": \"%s\"}", res)
+	}
+	return &Tools{
+		Name: "time_now",
+		Func: timeNowToolUse,
+	}
+}
+
+func timeNow(region string) (string, error) {
 	// 1. 加载时区
 	loc, err := time.LoadLocation(region) // 或 "America/New_York", "UTC"
 	if err != nil {
@@ -21,19 +39,7 @@ func TimeNow(region string) (string, error) {
 	return now.Format("2006-01-02 15:04:05"), nil
 }
 
-func TimeNowToolUse(args map[string]interface{}) (string, error) {
-	region, exists := args["region"]
-	if !exists {
-		return "", fmt.Errorf(errors.ErrToolFunctionCall, "region")
-	}
-	res, err := TimeNow(region.(string))
-	if err != nil {
-		return "", fmt.Errorf(errors.ErrToolFunctionCall, "region")
-	}
-	return res, nil
-}
-
-func TimeNowTool() client.Tool {
+func (t *Tools) TimeNowInfoForLLm() client.Tool {
 	return client.Tool{
 		Type: "function",
 		Function: client.FunctionDefinition{
