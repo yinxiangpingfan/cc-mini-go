@@ -8,8 +8,8 @@ import (
 	"strings"
 	"sync"
 
+	tool "github.com/yinxiangpingfan/cc-mini-go/agent_tools"
 	"github.com/yinxiangpingfan/cc-mini-go/client"
-	tool "github.com/yinxiangpingfan/cc-mini-go/tools"
 )
 
 func (a *ChatCompletionAgent) StreamAgent(messages []client.Message, system string) ([]any, error) {

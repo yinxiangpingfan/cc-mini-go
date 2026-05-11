@@ -1,4 +1,4 @@
-package tools
+package agent_tools
 
 import (
 	"fmt"

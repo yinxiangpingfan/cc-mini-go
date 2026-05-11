@@ -8,11 +8,11 @@ import (
 	"os"
 	"testing"
 
+	tools "github.com/yinxiangpingfan/cc-mini-go/agent_tools"
 	"github.com/yinxiangpingfan/cc-mini-go/client"
 	"github.com/yinxiangpingfan/cc-mini-go/config"
 	"github.com/yinxiangpingfan/cc-mini-go/log"
 	"github.com/yinxiangpingfan/cc-mini-go/prompt"
-	"github.com/yinxiangpingfan/cc-mini-go/tools"
 )
 
 func TestCall(t *testing.T) {

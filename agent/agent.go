@@ -2,11 +2,13 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
 	"sync"
 
+	tool "github.com/yinxiangpingfan/cc-mini-go/agent_tools"
 	"github.com/yinxiangpingfan/cc-mini-go/client"
 	"github.com/yinxiangpingfan/cc-mini-go/config"
-	tool "github.com/yinxiangpingfan/cc-mini-go/tools"
+	"github.com/yinxiangpingfan/cc-mini-go/errors"
 )
 
 type ChatCompletionAgent struct {
@@ -37,9 +39,13 @@ func (a *ChatCompletionAgent) Agent(messages []client.Message, system string) ([
 		res, resp, err := a.call.NewCallRequest(a.cf.Model, allMsg, false, system, []client.Tool{
 			timeNowTool.TimeNowInfoForLLm(),
 		}, nil)
-		if resp.StatusCode != 200 {
+		if err != nil {
 			//TODO:处理错误
 			return allMsg, err
+		}
+		if resp.StatusCode != 200 {
+			//TODO:处理错误
+			return allMsg, fmt.Errorf(errors.ErrHTTPStatusCode, resp.StatusCode)
 		}
 		//处理LLM返回的信息
 		if res.Choices[0].Message.Refusal != "" {

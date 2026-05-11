@@ -1,7 +1,6 @@
 package client
 
 import (
-	"fmt"
 	"net/http"
 	"strings"
 
@@ -18,7 +17,7 @@ func Init(baseUrl string, apiKey string) (*ChatCompletionClient, error) {
 	//确认baseurl合法
 	if strings.HasPrefix(baseUrl, "http://") || strings.HasPrefix(baseUrl, "https://") {
 	} else {
-		return nil, fmt.Errorf("%s", errors.ErrInvalidBaseUrl)
+		return nil, errors.ErrInvalidBaseUrl
 	}
 	return &ChatCompletionClient{
 		baseUrl:    baseUrl,
