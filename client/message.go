@@ -21,7 +21,7 @@ type ToolsMessage struct {
 
 type CallRequest struct {
 	Model      string      `json:"model"`
-	Messages   []Message   `json:"messages"`
+	Messages   []any       `json:"messages"`
 	Stream     bool        `json:"stream"`
 	Tools      []Tool      `json:"tools,omitempty"`
 	ToolChoice interface{} `json:"tool_choice,omitempty"` // "none"|"auto"|"required" 或 NamedToolChoice
@@ -158,10 +158,24 @@ func (m *ChatCompletionMessage) NewUserMessage(content string) *Message {
 	}
 }
 
+func (m *ChatCompletionMessage) NewToolsCall(call []ToolCall) *ResponseMessage {
+	return &ResponseMessage{
+		Role:      "assistant",
+		ToolCalls: call,
+	}
+}
+
 func (m *ChatCompletionMessage) NewToolsMessage(toolsId string, content string) *ToolsMessage {
 	return &ToolsMessage{
 		Role:    "tool",
 		Content: content,
 		ToolsId: toolsId,
+	}
+}
+
+func (m *ChatCompletionMessage) NewAssistantMessage(content string) *Message {
+	return &Message{
+		Role:    "assistant",
+		Content: content,
 	}
 }
