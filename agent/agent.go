@@ -2,7 +2,6 @@ package agent
 
 import (
 	"encoding/json"
-	"fmt"
 	"sync"
 
 	"github.com/yinxiangpingfan/cc-mini-go/client"
@@ -39,14 +38,12 @@ func (a *ChatCompletionAgent) Agent(messages []client.Message, system string) ([
 			timeNowTool.TimeNowInfoForLLm(),
 		}, nil)
 		if resp.StatusCode != 200 {
-			//TODO:处理错误值
-			fmt.Printf("Error: %s", err)
+			//TODO:处理错误
 			return allMsg, err
 		}
 		//处理LLM返回的信息
 		if res.Choices[0].Message.Refusal != "" {
 			//大模型拒绝回答
-			fmt.Printf("111")
 			allMsg = append(allMsg, *a.call.Cm.NewAssistantMessage(res.Choices[0].Message.Refusal))
 			return allMsg, nil
 		}
