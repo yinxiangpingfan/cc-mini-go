@@ -47,13 +47,10 @@ func (a *ChatCompletionAgent) Agent(messages []client.Message, system string) ([
 			allMsg = append(allMsg, *a.call.Cm.NewAssistantMessage(res.Choices[0].Message.Refusal))
 			return allMsg, nil
 		}
-		if res.Choices[0].Message.Content != "" {
-			allMsg = append(allMsg, *a.call.Cm.NewAssistantMessage(res.Choices[0].Message.Content))
-		}
 		//处理工具调用
 		if len(res.Choices[0].Message.ToolCalls) > 0 {
 			//追加工具请求信息
-			allMsg = append(allMsg, *a.call.Cm.NewToolsCall(res.Choices[0].Message.ToolCalls))
+			allMsg = append(allMsg, *a.call.Cm.NewToolsCall(res.Choices[0].Message.Content, res.Choices[0].Message.ToolCalls))
 			var wg sync.WaitGroup
 			var mu sync.Mutex
 			for _, v := range res.Choices[0].Message.ToolCalls {
@@ -74,6 +71,9 @@ func (a *ChatCompletionAgent) Agent(messages []client.Message, system string) ([
 			wg.Wait()
 		} else {
 			//没有工具调用，返回结果
+			if s, ok := res.Choices[0].Message.Content.(string); ok && s != "" {
+				allMsg = append(allMsg, *a.call.Cm.NewAssistantMessage(s))
+			}
 			return allMsg, nil
 		}
 	}

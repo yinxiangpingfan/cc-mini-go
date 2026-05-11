@@ -5,18 +5,21 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 )
 
 type Call struct {
-	cl *ChatCompletionClient
-	Cm *ChatCompletionMessage
+	cl  *ChatCompletionClient
+	Cm  *ChatCompletionMessage
+	log *slog.Logger
 }
 
-func NewCall(cl *ChatCompletionClient, cm *ChatCompletionMessage) *Call {
+func NewCall(cl *ChatCompletionClient, cm *ChatCompletionMessage, log *slog.Logger) *Call {
 	return &Call{
-		cl: cl,
-		Cm: cm,
+		cl:  cl,
+		Cm:  cm,
+		log: log,
 	}
 }
 
@@ -86,6 +89,7 @@ func (c *Call) newCallRequestWithStream(model string, messages []any, system str
 	if err != nil {
 		return CallResponse{}, nil, err
 	}
+
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.cl.apiKey)
 	resp, err := c.cl.httpClient.Do(req)

@@ -9,6 +9,7 @@ import (
 
 	"github.com/yinxiangpingfan/cc-mini-go/client"
 	"github.com/yinxiangpingfan/cc-mini-go/config"
+	"github.com/yinxiangpingfan/cc-mini-go/log"
 	"github.com/yinxiangpingfan/cc-mini-go/prompt"
 	"github.com/yinxiangpingfan/cc-mini-go/tools"
 )
@@ -24,7 +25,8 @@ func TestCall(t *testing.T) {
 		t.Error(err)
 	}
 	cm := client.NewChatCompletionMessage()
-	res, resp, err := client.NewCall(cl, cm).NewCallRequest(config.Model, []any{
+	log := log.InitLogger()
+	res, resp, err := client.NewCall(cl, cm, log).NewCallRequest(config.Model, []any{
 		client.Message{Role: "user", Content: "你可以干啥"},
 	}, false, prompt.SystemPrompt, nil, nil)
 	if err != nil {
@@ -45,7 +47,8 @@ func TestCallStream(t *testing.T) {
 		t.Error(err)
 	}
 	cm := client.NewChatCompletionMessage()
-	res, resp, err := client.NewCall(cl, cm).NewCallRequest(config.Model, []any{
+	log := log.InitLogger()
+	res, resp, err := client.NewCall(cl, cm, log).NewCallRequest(config.Model, []any{
 		client.Message{Role: "user", Content: "你好，你可以干啥"},
 	}, true, prompt.SystemPrompt, nil, func(sr client.StreamResponse) {
 		fmt.Println(sr)
@@ -73,7 +76,8 @@ func TestCallWithTool(t *testing.T) {
 	}
 	tool := tools.NewTimeNowTool()
 	cm := client.NewChatCompletionMessage()
-	res, resp, err := client.NewCall(cl, cm).NewCallRequest(config.Model, []any{
+	log := log.InitLogger()
+	res, resp, err := client.NewCall(cl, cm, log).NewCallRequest(config.Model, []any{
 		client.Message{Role: "user", Content: "你好，我在东京现在几点了"},
 	}, false, prompt.SystemPrompt, []client.Tool{tool.TimeNowInfoForLLm()}, nil)
 	if err != nil {
@@ -110,7 +114,8 @@ func TestCallWithToolStream(t *testing.T) {
 	tool := tools.NewTimeNowTool()
 	cm := client.NewChatCompletionMessage()
 	activeToolCalls := make(map[int]*client.StreamToolCall)
-	res, resp, err := client.NewCall(cl, cm).NewCallRequest(config.Model, []any{
+	log := log.InitLogger()
+	res, resp, err := client.NewCall(cl, cm, log).NewCallRequest(config.Model, []any{
 		client.Message{Role: "user", Content: "你好，现在东京几点"},
 	}, true, prompt.SystemPrompt, []client.Tool{tool.TimeNowInfoForLLm()}, func(sr client.StreamResponse) {
 		if sr.Choices[0].Delta.Content != "" {

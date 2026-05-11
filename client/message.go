@@ -73,7 +73,7 @@ type Choice struct {
 
 type ResponseMessage struct {
 	Role      string     `json:"role"`
-	Content   string     `json:"content"`
+	Content   any        `json:"content"`
 	Refusal   string     `json:"refusal,omitempty"`
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 }
@@ -158,9 +158,10 @@ func (m *ChatCompletionMessage) NewUserMessage(content string) *Message {
 	}
 }
 
-func (m *ChatCompletionMessage) NewToolsCall(call []ToolCall) *ResponseMessage {
+func (m *ChatCompletionMessage) NewToolsCall(content any, call []ToolCall) *ResponseMessage {
 	return &ResponseMessage{
 		Role:      "assistant",
+		Content:   content,
 		ToolCalls: call,
 	}
 }
