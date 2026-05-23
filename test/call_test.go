@@ -5,13 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"testing"
 
+	tools "github.com/yinxiangpingfan/cc-mini-go/agent_tools"
 	"github.com/yinxiangpingfan/cc-mini-go/client"
 	"github.com/yinxiangpingfan/cc-mini-go/config"
 	"github.com/yinxiangpingfan/cc-mini-go/log"
 	"github.com/yinxiangpingfan/cc-mini-go/prompt"
-	"github.com/yinxiangpingfan/cc-mini-go/tools"
 )
 
 func TestCall(t *testing.T) {
@@ -173,6 +174,216 @@ func TestCallWithToolStream(t *testing.T) {
 			res := tool.Func(args)
 			t.Log("Tool call result: ", res)
 		}
+	}
+	t.Logf("HTTP Status: %d", resp.StatusCode)
+	t.Logf("Response: %+v", res)
+}
+
+func TestCallWithImage(t *testing.T) {
+	config, err := config.GetConfig()
+	if err != nil {
+		t.Error(err, "Failed to get config")
+	}
+	t.Log("Init client with api url: " + config.ApiUrl)
+	cl, err := client.Init(config.ApiUrl, config.ApiKey)
+	if err != nil {
+		t.Error(err)
+	}
+	cm := client.NewChatCompletionMessage()
+	log := log.InitLogger()
+	res, resp, err := client.NewCall(cl, cm, log).NewCallRequest(config.Model, []any{
+		client.Message{Role: "user", Content: "这张图片是啥"},
+		*cm.NewImageMessage("https://storage.moegirl.org.cn/moegirl/commons/5/53/Kato_Megumi.jpg"),
+	}, false, prompt.SystemPrompt, nil, nil)
+	if err != nil {
+		t.Error(err)
+	}
+	t.Logf("HTTP Status: %d", resp.StatusCode)
+	t.Logf("Response: %+v", res)
+}
+
+func TestCallWithImageStream(t *testing.T) {
+	config, err := config.GetConfig()
+	if err != nil {
+		t.Error(err, "Failed to get config")
+	}
+	t.Log("Init client with api url: " + config.ApiUrl)
+	cl, err := client.Init(config.ApiUrl, config.ApiKey)
+	if err != nil {
+		t.Error(err)
+	}
+	tool := tools.NewTimeNowTool()
+	cm := client.NewChatCompletionMessage()
+	activeToolCalls := make(map[int]*client.StreamToolCall)
+	log := log.InitLogger()
+	res, resp, err := client.NewCall(cl, cm, log).NewCallRequest(config.Model, []any{
+		client.Message{Role: "user", Content: "这张图片是啥"}, *cm.NewImageMessage("https://storage.moegirl.org.cn/moegirl/commons/5/53/Kato_Megumi.jpg")},
+		true, prompt.SystemPrompt, []client.Tool{tool.TimeNowInfoForLLm()}, func(sr client.StreamResponse) {
+			if sr.Choices[0].Delta.Content != "" {
+				fmt.Print(sr.Choices[0].Delta.Content)
+			}
+			if len(sr.Choices[0].Delta.ToolCalls) > 0 {
+				for _, tc := range sr.Choices[0].Delta.ToolCalls {
+					idx := tc.Index
+					if _, exists := activeToolCalls[idx]; !exists {
+						activeToolCalls[idx] = &client.StreamToolCall{}
+					}
+					// 获取当前这个 Index 对应的本地缓存对象
+					activeCall := activeToolCalls[idx]
+
+					// 组装 ID (仅首次出现时 tcChunk.ID 有值)
+					if tc.Id != nil {
+						activeCall.Id = tc.Id
+						// 初始化 Function
+						if activeCall.Function == nil {
+							activeCall.Function = &client.StreamFunction{}
+						}
+					}
+
+					// 组装 Function Name (仅首次出现时有值)
+					if tc.Function != nil && tc.Function.Name != nil {
+						activeCall.Function.Name = tc.Function.Name
+					}
+
+					// 持续拼凑 Arguments
+					if tc.Function != nil && tc.Function.Arguments != nil {
+						if activeCall.Function == nil {
+							activeCall.Function = &client.StreamFunction{}
+						}
+						if activeCall.Function.Arguments == nil {
+							activeCall.Function.Arguments = tc.Function.Arguments
+						} else {
+							*activeCall.Function.Arguments += *tc.Function.Arguments
+						}
+					}
+				}
+			}
+		})
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			t.Log("Stream completed")
+		} else {
+			t.Error(err)
+		}
+	}
+	for _, activeCall := range activeToolCalls {
+		if activeCall.Function != nil && activeCall.Function.Arguments != nil {
+			t.Log("Tool call: ", *activeCall.Function.Arguments)
+			var args map[string]interface{}
+			json.Unmarshal([]byte(*activeCall.Function.Arguments), &args)
+			res := tool.Func(args)
+			t.Log("Tool call result: ", res)
+		}
+	}
+	t.Logf("HTTP Status: %d", resp.StatusCode)
+	t.Logf("Response: %+v", res)
+}
+
+func TestCallWithImageStreamBase64(t *testing.T) {
+	config, err := config.GetConfig()
+	if err != nil {
+		t.Error(err, "Failed to get config")
+	}
+	t.Log("Init client with api url: " + config.ApiUrl)
+	cl, err := client.Init(config.ApiUrl, config.ApiKey)
+	if err != nil {
+		t.Error(err)
+	}
+	// 读取 base64 图片（文件内容已带 data:image/jpeg;base64, 前缀）
+	imgBytes, err := os.ReadFile("data/photo.txt")
+	if err != nil {
+		t.Fatal("Failed to read photo.txt:", err)
+	}
+	imgDataUrl := string(imgBytes)
+
+	tool := tools.NewTimeNowTool()
+	cm := client.NewChatCompletionMessage()
+	activeToolCalls := make(map[int]*client.StreamToolCall)
+	log := log.InitLogger()
+	res, resp, err := client.NewCall(cl, cm, log).NewCallRequest(config.Model, []any{
+		client.Message{Role: "user", Content: "这张图片是啥"},
+		*cm.NewImageMessage(imgDataUrl),
+	}, true, prompt.SystemPrompt, []client.Tool{tool.TimeNowInfoForLLm()}, func(sr client.StreamResponse) {
+		if sr.Choices[0].Delta.Content != "" {
+			fmt.Print(sr.Choices[0].Delta.Content)
+		}
+		if len(sr.Choices[0].Delta.ToolCalls) > 0 {
+			for _, tc := range sr.Choices[0].Delta.ToolCalls {
+				idx := tc.Index
+				if _, exists := activeToolCalls[idx]; !exists {
+					activeToolCalls[idx] = &client.StreamToolCall{}
+				}
+				activeCall := activeToolCalls[idx]
+
+				if tc.Id != nil {
+					activeCall.Id = tc.Id
+					if activeCall.Function == nil {
+						activeCall.Function = &client.StreamFunction{}
+					}
+				}
+
+				if tc.Function != nil && tc.Function.Name != nil {
+					activeCall.Function.Name = tc.Function.Name
+				}
+
+				if tc.Function != nil && tc.Function.Arguments != nil {
+					if activeCall.Function == nil {
+						activeCall.Function = &client.StreamFunction{}
+					}
+					if activeCall.Function.Arguments == nil {
+						activeCall.Function.Arguments = tc.Function.Arguments
+					} else {
+						*activeCall.Function.Arguments += *tc.Function.Arguments
+					}
+				}
+			}
+		}
+	})
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			t.Log("Stream completed")
+		} else {
+			t.Error(err)
+		}
+	}
+	for _, activeCall := range activeToolCalls {
+		if activeCall.Function != nil && activeCall.Function.Arguments != nil {
+			t.Log("Tool call: ", *activeCall.Function.Arguments)
+			var args map[string]interface{}
+			json.Unmarshal([]byte(*activeCall.Function.Arguments), &args)
+			res := tool.Func(args)
+			t.Log("Tool call result: ", res)
+		}
+	}
+	t.Logf("HTTP Status: %d", resp.StatusCode)
+	t.Logf("Response: %+v", res)
+}
+
+func TestCallWithImageBase64(t *testing.T) {
+	config, err := config.GetConfig()
+	if err != nil {
+		t.Error(err, "Failed to get config")
+	}
+	t.Log("Init client with api url: " + config.ApiUrl)
+	cl, err := client.Init(config.ApiUrl, config.ApiKey)
+	if err != nil {
+		t.Error(err)
+	}
+	// 读取 base64 图片（文件内容已带 data:image/jpeg;base64, 前缀）
+	imgBytes, err := os.ReadFile("data/photo.txt")
+	if err != nil {
+		t.Fatal("Failed to read photo.txt:", err)
+	}
+	imgDataUrl := string(imgBytes)
+
+	cm := client.NewChatCompletionMessage()
+	log := log.InitLogger()
+	res, resp, err := client.NewCall(cl, cm, log).NewCallRequest(config.Model, []any{
+		client.Message{Role: "user", Content: "这张图片是啥"},
+		*cm.NewImageMessage(imgDataUrl),
+	}, false, prompt.SystemPrompt, nil, nil)
+	if err != nil {
+		t.Error(err)
 	}
 	t.Logf("HTTP Status: %d", resp.StatusCode)
 	t.Logf("Response: %+v", res)

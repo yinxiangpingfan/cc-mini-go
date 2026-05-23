@@ -17,6 +17,15 @@ type ToolsMessage struct {
 	ToolsId string `json:"tool_call_id"`
 }
 
+type ImageMessage struct {
+	Type     string      `json:"type"`
+	ImageUrl ImageUrlObj `json:"image_url"`
+}
+
+type ImageUrlObj struct {
+	Url string `json:"url"`
+}
+
 //============================Request=====================================
 
 type CallRequest struct {
@@ -177,6 +186,19 @@ func (m *ChatCompletionMessage) NewToolsMessage(toolsId string, content string) 
 func (m *ChatCompletionMessage) NewAssistantMessage(content string) *Message {
 	return &Message{
 		Role:    "assistant",
+		Content: content,
+	}
+}
+
+func (m *ChatCompletionMessage) NewImageMessage(url string) *Message {
+	content := []ImageMessage{
+		{
+			Type:     "image_url",
+			ImageUrl: ImageUrlObj{Url: url},
+		},
+	}
+	return &Message{
+		Role:    "user",
 		Content: content,
 	}
 }

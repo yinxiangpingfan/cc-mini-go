@@ -8,8 +8,8 @@ import (
 	"strings"
 	"sync"
 
+	tool "github.com/yinxiangpingfan/cc-mini-go/agent_tools"
 	"github.com/yinxiangpingfan/cc-mini-go/client"
-	tool "github.com/yinxiangpingfan/cc-mini-go/tools"
 )
 
 func (a *ChatCompletionAgent) StreamAgent(messages []client.Message, system string) ([]any, error) {
@@ -22,13 +22,32 @@ func (a *ChatCompletionAgent) StreamAgent(messages []client.Message, system stri
 	tools := make(map[string]func(input map[string]any) string)
 	timeNowTool := tool.NewTimeNowTool()
 	tools[timeNowTool.Name] = timeNowTool.Func
+	readFileTool := tool.NewReadFile()
+	tools[readFileTool.Name] = readFileTool.Func
+
 	//定义回调函数
 	activeToolCalls := make(map[int]*client.StreamToolCall) // 当前存在的 ToolCalls
 	var contentBuilder strings.Builder                      // 累积本轮 assistant 的 content
+	cur := false
+	cur1 := false
 	onMessage := func(sr client.StreamResponse) {
+		if len(sr.Choices) == 0 {
+			return
+		}
+		if sr.Choices[0].Delta.ReasoningContent != "" {
+			if cur == false {
+				fmt.Println("思考")
+				cur = true
+			}
+			fmt.Print(sr.Choices[0].Delta.ReasoningContent)
+		}
 		if sr.Choices[0].Delta.Content != "" {
-			contentBuilder.WriteString(sr.Choices[0].Delta.Content)
+			if cur1 == false {
+				fmt.Println("\n对话")
+				cur1 = true
+			}
 			fmt.Print(sr.Choices[0].Delta.Content)
+			contentBuilder.WriteString(sr.Choices[0].Delta.Content)
 		}
 		if len(sr.Choices[0].Delta.ToolCalls) > 0 {
 			for _, tc := range sr.Choices[0].Delta.ToolCalls {
@@ -41,7 +60,7 @@ func (a *ChatCompletionAgent) StreamAgent(messages []client.Message, system stri
 				activeCall := activeToolCalls[idx]
 
 				// 组装 ID (仅首次出现时 tcChunk.ID 有值)
-				if tc.Id != nil {
+				if tc.Id != nil && *tc.Id != "" {
 					activeCall.Id = tc.Id
 					// 初始化 Function
 					if activeCall.Function == nil {
@@ -76,6 +95,7 @@ func (a *ChatCompletionAgent) StreamAgent(messages []client.Message, system stri
 
 		_, _, err := a.call.NewCallRequest(a.cf.Model, allMsg, true, system, []client.Tool{
 			timeNowTool.TimeNowInfoForLLm(),
+			readFileTool.ReadFileInfoForLLm(),
 		}, onMessage)
 		if err != nil && !errors.Is(err, io.EOF) {
 			return allMsg, err
@@ -103,9 +123,13 @@ func (a *ChatCompletionAgent) StreamAgent(messages []client.Message, system stri
 			})
 		}
 		// 合并本轮 assistant 消息：content + tool_calls 同一条
+		var content any
+		if contentBuilder.Len() > 0 {
+			content = contentBuilder.String()
+		}
 		assistantMsg := client.ResponseMessage{
 			Role:      "assistant",
-			Content:   contentBuilder.String(),
+			Content:   content,
 			ToolCalls: toolCalls,
 		}
 		allMsg = append(allMsg, assistantMsg)
