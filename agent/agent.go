@@ -34,10 +34,13 @@ func (a *ChatCompletionAgent) Agent(messages []client.Message, system string) ([
 	tools := make(map[string]func(input map[string]any) string)
 	timeNowTool := tool.NewTimeNowTool()
 	tools[timeNowTool.Name] = timeNowTool.Func
+	readFileTool := tool.NewReadFile()
+	tools[readFileTool.Name] = readFileTool.Func
 	//开始请求LLM
 	for {
 		res, resp, err := a.call.NewCallRequest(a.cf.Model, allMsg, false, system, []client.Tool{
 			timeNowTool.TimeNowInfoForLLm(),
+			readFileTool.ReadFileInfoForLLm(),
 		}, nil)
 		if err != nil {
 			//TODO:处理错误
@@ -46,6 +49,9 @@ func (a *ChatCompletionAgent) Agent(messages []client.Message, system string) ([
 		if resp.StatusCode != 200 {
 			//TODO:处理错误
 			return allMsg, fmt.Errorf(errors.ErrHTTPStatusCode, resp.StatusCode)
+		}
+		if len(res.Choices) == 0 {
+			return allMsg, nil
 		}
 		//处理LLM返回的信息
 		if res.Choices[0].Message.Refusal != "" {
