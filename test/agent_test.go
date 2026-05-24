@@ -24,7 +24,7 @@ func TestAgent(t *testing.T) {
 	call := client.NewCall(cl, cm, log)
 	a := agent.NewChatCompletionAgent(&cf, call)
 	res, err := a.Agent([]client.Message{
-		*cm.NewUserMessage("你好，现在东京几点?以及告诉我/Users/easyimpr/Desktop/cc-mini-go/test/agent_test.go里面的内容"),
+		*cm.NewUserMessage("你好，现在东京几点啊，并且在/Users/easyimpr/Desktop/cc-mini-go/test/data目录下创建一个test.txt文件，内容为test"),
 	}, prompt.SystemPrompt)
 	if err != nil {
 		t.Error(err)
@@ -48,7 +48,7 @@ func TestAgentStream(t *testing.T) {
 	call := client.NewCall(cl, cm, log)
 	a := agent.NewChatCompletionAgent(&cf, call)
 	res, err := a.StreamAgent([]client.Message{
-		*cm.NewUserMessage("你好，现在东京几点啊，并且告诉我/Users/easyimpr/Desktop/cc-mini-go/agent_tools/read.go里面的内容？"),
+		*cm.NewUserMessage("你好，现在东京几点啊，并且在/Users/easyimpr/Desktop/cc-mini-go/test/data目录下创建一个test.txt文件，内容为hello.txt，如果有东西就覆盖"),
 	}, prompt.SystemPrompt)
 	if err != nil {
 		t.Error(err)

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"sync"
 
-	tool "github.com/yinxiangpingfan/cc-mini-go/agent_tools"
 	"github.com/yinxiangpingfan/cc-mini-go/client"
 	"github.com/yinxiangpingfan/cc-mini-go/config"
 	"github.com/yinxiangpingfan/cc-mini-go/errors"
@@ -32,16 +31,10 @@ func (a *ChatCompletionAgent) Agent(messages []client.Message, system string) ([
 	}
 	//存储工具信息与调用函数
 	tools := make(map[string]func(input map[string]any) string)
-	timeNowTool := tool.NewTimeNowTool()
-	tools[timeNowTool.Name] = timeNowTool.Func
-	readFileTool := tool.NewReadFile()
-	tools[readFileTool.Name] = readFileTool.Func
+	clientTool := a.ToolInit(&tools)
 	//开始请求LLM
 	for {
-		res, resp, err := a.call.NewCallRequest(a.cf.Model, allMsg, false, system, []client.Tool{
-			timeNowTool.TimeNowInfoForLLm(),
-			readFileTool.ReadFileInfoForLLm(),
-		}, nil)
+		res, resp, err := a.call.NewCallRequest(a.cf.Model, allMsg, false, system, clientTool, nil)
 		if err != nil {
 			//TODO:处理错误
 			return allMsg, err
