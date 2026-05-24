@@ -14,11 +14,6 @@ import (
 	"github.com/yinxiangpingfan/cc-mini-go/tools"
 )
 
-type request struct {
-	FilePath string `json:"file_path"` // 文件或目录
-	Offset   int    `json:"offset"`    // 起始行（1-based，默认 1）
-	Limit    int    `json:"limit"`     // 最大行数（默认 2000）
-}
 type response struct {
 	Content      string `json:"content"`        // 带行号的内容 或 目录列表
 	TotalLines   int    `json:"total_lines"`    // 文件总行数（如果是文件）
@@ -133,8 +128,14 @@ func NewReadFile() *Tools {
 			}
 			jsonBytes, err := json.Marshal(res)
 			if err != nil {
-				return fmt.Sprintf("{\"error\": \"json marshal error:%s\"}", err.Error())
+				return fmt.Sprintf("{\"error\": \"%s\"}", fmt.Errorf("%w: %w", errors.ErrMarshalResponse, err))
 			}
+			//把文件标为已读
+			hash, err := tools.HashFile(filePath)
+			if err != nil {
+				return fmt.Sprintf("{\"error\": \"%s\"}", fmt.Errorf("%w: %w", errors.ErrHashFile, err))
+			}
+			ReadFiles[filePath] = hash
 			return string(jsonBytes)
 		},
 	}

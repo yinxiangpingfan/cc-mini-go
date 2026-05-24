@@ -8,7 +8,6 @@ import (
 	"strings"
 	"sync"
 
-	tool "github.com/yinxiangpingfan/cc-mini-go/agent_tools"
 	"github.com/yinxiangpingfan/cc-mini-go/client"
 )
 
@@ -20,10 +19,7 @@ func (a *ChatCompletionAgent) StreamAgent(messages []client.Message, system stri
 	}
 	//存储工具信息与调用函数
 	tools := make(map[string]func(input map[string]any) string)
-	timeNowTool := tool.NewTimeNowTool()
-	tools[timeNowTool.Name] = timeNowTool.Func
-	readFileTool := tool.NewReadFile()
-	tools[readFileTool.Name] = readFileTool.Func
+	clientTool := a.ToolInit(&tools)
 
 	//定义回调函数
 	activeToolCalls := make(map[int]*client.StreamToolCall) // 当前存在的 ToolCalls
@@ -93,10 +89,7 @@ func (a *ChatCompletionAgent) StreamAgent(messages []client.Message, system stri
 		contentBuilder.Reset()
 		activeToolCalls = make(map[int]*client.StreamToolCall)
 
-		_, _, err := a.call.NewCallRequest(a.cf.Model, allMsg, true, system, []client.Tool{
-			timeNowTool.TimeNowInfoForLLm(),
-			readFileTool.ReadFileInfoForLLm(),
-		}, onMessage)
+		_, _, err := a.call.NewCallRequest(a.cf.Model, allMsg, true, system, clientTool, onMessage)
 		if err != nil && !errors.Is(err, io.EOF) {
 			return allMsg, err
 		}

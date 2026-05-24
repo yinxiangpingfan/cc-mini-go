@@ -10,6 +10,7 @@
 - **Tool Call Loop** - Auto-detects `tool_calls` -> concurrent local execution -> feeds back `role:"tool"` -> loops until final answer
 - **Reasoning Model Support** - Handles `reasoning_content` for thinking models (DeepSeek-R1, etc.)
 - **Binary File Detection** - Extension whitelist + null-byte detection + MIME sniffing
+- **Write Safety Protection** - SHA256 hash-based read-before-write mechanism, prevents blind overwrites and detects external modifications
 
 ## Project Structure
 
@@ -19,11 +20,11 @@ cc-mini-go/
 │   ├── agent.go       # Non-streaming agent with tool call loop
 │   └── agent_stream.go # SSE streaming agent with reasoning support
 ├── agent_tools/       # Built-in tool implementations
-│   ├── global.go      # Tool interface definition
+│   ├── global.go      # Tool interface definition & ReadFiles state
 │   ├── time.go        # time_now (IANA timezone)
-│   ├── read.go        # read_file (with binary detection, pagination)
+│   ├── read.go        # read_file (with binary detection, pagination, hash tracking)
 │   ├── edit.go        # edit_file (WIP)
-│   └── write.go       # write_file (WIP)
+│   └── write.go       # write_file (hash-verified write protection)
 ├── client/            # HTTP client & protocol types
 │   ├── init.go        # Client initialization
 │   ├── call.go        # Request dispatch (stream & non-stream)
@@ -32,7 +33,7 @@ cc-mini-go/
 ├── errors/            # Sentinel error definitions
 ├── log/               # slog-based logger
 ├── prompt/            # System & tool prompt templates
-├── tools/             # Shared utilities (binary file detection)
+├── tools/             # Shared utilities (binary detection, SHA256 hash)
 └── test/              # Integration & unit tests
 ```
 
@@ -129,6 +130,7 @@ User Message
 |------|-------------|------------|
 | `time_now` | Get current time in specified timezone | `region` (string, required, IANA format) |
 | `read_file` | Read file with line numbers, binary detection, pagination | `file_path` (required), `offset` (default 1), `limit` (default 2000) |
+| `write_file` | Write file with read-before-write hash verification | `file_path` (required), `content` (required) |
 
 ## Adding a New Tool
 
@@ -149,6 +151,7 @@ type Tools struct {
 - **`[]any` for message history** - Heterogeneous message types (`Message`, `ToolsMessage`, `ResponseMessage`) coexist in a single slice, serialized correctly via Go's JSON interface dispatch
 - **`content: null` vs `""`** - When assistant has no text content (only tool_calls), `Content` is set to `nil` (serializes as `null`) to comply with API expectations
 - **Stream tool_call ID handling** - Some APIs send `"id": ""` in subsequent SSE chunks; the parser only accepts non-empty IDs to prevent overwriting
+- **SHA256 write protection** - `read_file` records file hash; `write_file` verifies hash consistency before overwriting. If the file was externally modified, write is rejected until re-read
 
 ## License
 

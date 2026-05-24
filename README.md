@@ -12,6 +12,7 @@
 - **工具调用闭环** - 自动识别 `tool_calls` -> 并发执行本地函数 -> 回灌 `role:"tool"` 消息 -> 循环直到最终回答
 - **推理模型支持** - 处理 `reasoning_content` 字段，兼容思考类模型（DeepSeek-R1 等）
 - **二进制文件检测** - 扩展名白名单 + null 字节检测 + MIME 嗅探
+- **写入安全保护** - 基于 SHA256 hash 的 read-before-write 机制，防止盲写覆盖、检测外部修改
 
 ## 项目结构
 
@@ -21,11 +22,11 @@ cc-mini-go/
 │   ├── agent.go       # 非流式 Agent，工具调用闭环
 │   └── agent_stream.go # SSE 流式 Agent，支持推理模型
 ├── agent_tools/       # 内置工具实现
-│   ├── global.go      # 工具接口定义
+│   ├── global.go      # 工具接口定义 & ReadFiles 状态
 │   ├── time.go        # time_now（IANA 时区）
-│   ├── read.go        # read_file（二进制检测、分页）
+│   ├── read.go        # read_file（二进制检测、分页、hash 记录）
 │   ├── edit.go        # edit_file（开发中）
-│   └── write.go       # write_file（开发中）
+│   └── write.go       # write_file（hash 校验写入保护）
 ├── client/            # HTTP 客户端 & 协议类型
 │   ├── init.go        # 客户端初始化
 │   ├── call.go        # 请求分发（流式 & 非流式）
@@ -34,7 +35,7 @@ cc-mini-go/
 ├── errors/            # 哨兵错误定义
 ├── log/               # 基于 slog 的日志
 ├── prompt/            # 系统提示词 & 工具提示词模板
-├── tools/             # 共享工具函数（二进制文件检测）
+├── tools/             # 共享工具函数（二进制检测、SHA256 hash）
 └── test/              # 集成测试 & 单元测试
 ```
 
@@ -131,6 +132,7 @@ go test -v ./agent_tools/ -run TestReadFile
 |------|------|------|
 | `time_now` | 获取指定时区的当前时间 | `region`（string，必填，IANA 格式如 `Asia/Tokyo`） |
 | `read_file` | 读取文件内容，支持行号、二进制检测、分页 | `file_path`（必填）、`offset`（默认 1）、`limit`（默认 2000） |
+| `write_file` | 写入文件，内置 read-before-write hash 校验 | `file_path`（必填）、`content`（必填） |
 
 ## 添加新工具
 
@@ -151,6 +153,7 @@ type Tools struct {
 - **`[]any` 消息历史** - 异构消息类型（`Message`、`ToolsMessage`、`ResponseMessage`）共存于同一切片，通过 Go 的 JSON 接口分发正确序列化
 - **`content: null` vs `""`** - 当 assistant 只有工具调用没有文本时，`Content` 设为 `nil`（序列化为 `null`），符合 API 协议预期
 - **流式 tool_call ID 处理** - 部分 API 在后续 SSE chunk 中发送 `"id": ""`，解析器仅接受非空 ID，防止覆盖首个 chunk 中的正确值
+- **SHA256 写入保护** - `read_file` 记录文件 hash，`write_file` 覆盖前校验 hash 一致性；文件被外部修改则拒绝写入，要求重新读取
 
 ## License
 
