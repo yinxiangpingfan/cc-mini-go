@@ -1,6 +1,7 @@
 package agent_tools
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -61,18 +62,19 @@ func NewWriteFileTool() *Tools {
 			//从args中获取工具的参数
 			filePath, exists := args["file_path"].(string)
 			if !exists {
-				return fmt.Sprintf("{\"error\": \"%s\"}", fmt.Sprintf(errors.ErrToolFunctionCall, "file_path"))
+				return jsonErr(fmt.Sprintf(errors.ErrToolFunctionCall, "file_path"))
 			}
 			content, exists := args["content"].(string)
 			if !exists {
-				return fmt.Sprintf("{\"error\": \"%s\"}", fmt.Sprintf(errors.ErrToolFunctionCall, "content"))
+				return jsonErr(fmt.Sprintf(errors.ErrToolFunctionCall, "content"))
 			}
 			err := writeFile(filePath, content)
 			if err != nil {
-				return fmt.Sprintf("{\"error\": \"%s\"}", err.Error())
+				return jsonErr(err.Error())
 			}
 			lines := strings.Count(content, "\n") + 1
-			return fmt.Sprintf("{\"success\": true, \"lines\": %d, \"path\": \"%s\"}", lines, filePath)
+			b, _ := json.Marshal(map[string]interface{}{"success": true, "lines": lines, "path": filePath})
+			return string(b)
 		},
 	}
 }

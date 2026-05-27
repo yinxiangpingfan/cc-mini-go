@@ -104,7 +104,7 @@ func NewReadFile() *Tools {
 			//从args中获取工具的参数
 			filePath, exists := args["file_path"].(string)
 			if !exists {
-				return fmt.Sprintf("{\"error\": \"%s\"}", fmt.Sprintf(errors.ErrToolFunctionCall, "file_path"))
+				return jsonErr(fmt.Sprintf(errors.ErrToolFunctionCall, "file_path"))
 			}
 			offset, exists := args["offset"].(int)
 			if !exists {
@@ -124,16 +124,16 @@ func NewReadFile() *Tools {
 			var err error
 			res.Content, res.TotalLines, res.StartLine, res.EndLine, res.IsDirectory, res.Truncated, res.IsBinaryFile, err = readFile(filePath, offset, limit)
 			if err != nil {
-				return fmt.Sprintf("{\"error\": \"%s\"}", err.Error())
+				return jsonErr(err.Error())
 			}
 			jsonBytes, err := json.Marshal(res)
 			if err != nil {
-				return fmt.Sprintf("{\"error\": \"%s\"}", fmt.Errorf("%w: %w", errors.ErrMarshalResponse, err))
+				return jsonErr(fmt.Errorf("%w: %w", errors.ErrMarshalResponse, err).Error())
 			}
 			//把文件标为已读
 			hash, err := tools.HashFile(filePath)
 			if err != nil {
-				return fmt.Sprintf("{\"error\": \"%s\"}", fmt.Errorf("%w: %w", errors.ErrHashFile, err))
+				return jsonErr(fmt.Errorf("%w: %w", errors.ErrHashFile, err).Error())
 			}
 			ReadFiles[filePath] = hash
 			return string(jsonBytes)

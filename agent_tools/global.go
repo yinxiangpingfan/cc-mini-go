@@ -1,5 +1,7 @@
 package agent_tools
 
+import "encoding/json"
+
 type Tools struct {
 	//工具的名称
 	Name string
@@ -9,3 +11,8 @@ type Tools struct {
 
 // ReadFiles 记录当前会话中已经读取过的文件路径和哈希值
 var ReadFiles = make(map[string]string)
+
+func jsonErr(msg string) string {
+	b, _ := json.Marshal(map[string]string{"error": msg})
+	return string(b)
+}
