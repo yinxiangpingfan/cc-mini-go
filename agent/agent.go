@@ -33,6 +33,8 @@ func (a *ChatCompletionAgent) Agent(messages []client.Message, system string) ([
 	//存储工具信息与调用函数
 	tools := make(map[string]func(input map[string]any) string)
 	clientTool := a.ToolInit(&tools)
+	//把 skill 目录拼进 system prompt（轻量发现层）
+	system = a.withSkillCatalog(system)
 
 	//开始请求LLM
 	for {

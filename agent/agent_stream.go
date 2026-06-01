@@ -21,6 +21,8 @@ func (a *ChatCompletionAgent) StreamAgent(messages []client.Message, system stri
 	//存储工具信息与调用函数
 	tools := make(map[string]func(input map[string]any) string)
 	clientTool := a.ToolInit(&tools)
+	//把 skill 目录拼进 system prompt（轻量发现层）
+	system = a.withSkillCatalog(system)
 
 	//定义回调函数
 	activeToolCalls := make(map[int]*client.StreamToolCall) // 当前存在的 ToolCalls

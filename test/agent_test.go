@@ -48,7 +48,7 @@ func TestAgentStream(t *testing.T) {
 	call := client.NewCall(cl, cm, log)
 	a := agent.NewChatCompletionAgent(&cf, call)
 	res, err := a.StreamAgent([]client.Message{
-		*cm.NewUserMessage("请你查看/Users/easyimpr/Desktop/cc-mini-go/client和/Users/easyimpr/Desktop/cc-mini-go/tools目录下的文件，告诉我这俩个包是干啥的，请你启动subagent实现这个功能。"),
+		*cm.NewUserMessage("使用code-review skill来审一下代码"),
 	}, prompt.SystemPrompt)
 	if err != nil {
 		t.Error(err)

@@ -84,3 +84,11 @@ var ToDoListPrompt = `"Create or replace the task checklist shown to the user. "
 var TaskPrompt = `"Run a subtask in a clean context and return a summary."`
 
 var SubAgentSystemPrompt = `"You are a coding subagent. Complete the given task using the available tools, then summarize your findings concisely."`
+
+var LoadSkillPrompt = `"Load the full body of a named skill into the current context. "
+        "Use this when a task needs specialized instructions before you act. "
+        "Only the skill catalog (names and descriptions) is visible by default; "
+        "call this tool to read the complete guidance for the skill you need."`
+
+// SkillCatalogHeader 是注入 system prompt 的 skill 目录段落标题
+var SkillCatalogHeader = "Skills available (call load_skill to load the full instructions before acting):"
