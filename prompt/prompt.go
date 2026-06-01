@@ -80,3 +80,7 @@ var ToDoListPrompt = `"Create or replace the task checklist shown to the user. "
         "Use when starting a multi-step task to track progress. "
         "Each item has a subject (brief imperative title) and an optional "
         "initial status (pending by default)."`
+
+var TaskPrompt = `"Run a subtask in a clean context and return a summary."`
+
+var SubAgentSystemPrompt = `"You are a coding subagent. Complete the given task using the available tools, then summarize your findings concisely."`

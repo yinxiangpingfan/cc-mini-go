@@ -16,11 +16,14 @@ func (a *ChatCompletionAgent) ToolInit(tools *map[string]func(input map[string]a
 	(*tools)[baseTool.Name] = baseTool.Func
 	todoListTool := tool.NewTodoListTool()
 	(*tools)[todoListTool.Name] = todoListTool.Func
+	subAgentTool := tool.NewSubAgentTools(a.call, a.cf.Model)
+	(*tools)[subAgentTool.Name] = subAgentTool.Func
 	return []client.Tool{
 		timeNowTool.TimeNowInfoForLLm(),
 		readFileTool.ReadFileInfoForLLm(),
 		writeFileTool.WriteFileInfoForLLm(),
 		baseTool.BashToolForLLM(),
 		todoListTool.TodoListInfoLLm(),
+		subAgentTool.SubAgentInfoForLLM(),
 	}
 }
