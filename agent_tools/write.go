@@ -34,16 +34,18 @@ func writeFile(file_Path string, content string) error {
 		if err != nil {
 			return fmt.Errorf("%w: %w", errors.ErrHashFile, err)
 		}
-		if fileHashed, ok := ReadFiles[file_Path]; !ok {
+		ReadFiles.MU.RLock()
+		fileHashed, ok := ReadFiles.ReadFiles[file_Path]
+		ReadFiles.MU.RUnlock()
+		if !ok {
 			return fmt.Errorf("%w: %s", errors.ErrFileNotRead, file_Path)
-		} else {
-			if fileHashed != fileHash {
-				return fmt.Errorf("%w: %s", errors.ErrFileModified, file_Path)
-			}
-			// hash 一致，允许覆盖写入
-			if err := os.WriteFile(file_Path, []byte(content), 0644); err != nil {
-				return fmt.Errorf("%w: %w", errors.ErrWriteFile, err)
-			}
+		}
+		if fileHashed != fileHash {
+			return fmt.Errorf("%w: %s", errors.ErrFileModified, file_Path)
+		}
+		// hash 一致，允许覆盖写入
+		if err := os.WriteFile(file_Path, []byte(content), 0644); err != nil {
+			return fmt.Errorf("%w: %w", errors.ErrWriteFile, err)
 		}
 	}
 	//更新文件哈希
@@ -51,7 +53,9 @@ func writeFile(file_Path string, content string) error {
 	if err != nil {
 		return fmt.Errorf("%w: %w", errors.ErrHashFile, err)
 	}
-	ReadFiles[file_Path] = fileHash
+	ReadFiles.MU.Lock()
+	ReadFiles.ReadFiles[file_Path] = fileHash
+	ReadFiles.MU.Unlock()
 	return nil
 }
 
@@ -87,12 +91,12 @@ func (t *Tools) WriteFileInfoForLLm() client.Tool {
 			Description: prompt.WriteFilePrompt,
 			Parameters: client.FunctionParameters{
 				Type: "object",
-				Properties: map[string]client.ParameterProperty{
-					"file_path": {
+				Properties: map[string]any{
+					"file_path": client.ParameterProperty{
 						Description: "Absolute path to the file to write",
 						Type:        "string",
 					},
-					"content": {
+					"content": client.ParameterProperty{
 						Description: "The full content to write to the file",
 						Type:        "string",
 					},

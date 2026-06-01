@@ -1,6 +1,7 @@
 package agent_tools
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -12,13 +13,14 @@ func NewTimeNowTool() *Tools {
 	timeNowToolUse := func(args map[string]interface{}) string {
 		region, exists := args["region"]
 		if !exists {
-			return fmt.Sprintf("{\"error\": \"%s\"}", fmt.Sprintf(errors.ErrToolFunctionCall, "region"))
+			return jsonErr(fmt.Sprintf(errors.ErrToolFunctionCall, "region"))
 		}
 		res, err := timeNow(region.(string))
 		if err != nil {
-			return fmt.Sprintf("{\"error\": \"%s\"}", fmt.Sprintf(errors.ErrToolFunctionCall, "region"))
+			return jsonErr(fmt.Sprintf(errors.ErrToolFunctionCall, "region"))
 		}
-		return fmt.Sprintf("{\"time\": \"%s\"}", res)
+		b, _ := json.Marshal(map[string]string{"time": res})
+		return string(b)
 	}
 	return &Tools{
 		Name: "time_now",
@@ -47,9 +49,8 @@ func (t *Tools) TimeNowInfoForLLm() client.Tool {
 			Description: "Get the current time for the user",
 			Parameters: client.FunctionParameters{
 				Type: "object",
-				Properties: map[string]client.ParameterProperty{
-					//地区
-					"region": {
+				Properties: map[string]any{
+					"region": client.ParameterProperty{
 						Type:        "string",
 						Description: "IANA timezone, e.g. America/Los_Angeles, Asia/Shanghai, Europe/London",
 					},

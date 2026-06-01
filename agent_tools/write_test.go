@@ -13,8 +13,8 @@ import (
 func resetReadFiles(t *testing.T) {
 	t.Helper()
 	t.Cleanup(func() {
-		for k := range ReadFiles {
-			delete(ReadFiles, k)
+		for k := range ReadFiles.ReadFiles {
+			delete(ReadFiles.ReadFiles, k)
 		}
 	})
 }
@@ -34,7 +34,10 @@ func TestWriteFile_NewFile(t *testing.T) {
 		t.Fatalf("expected 'hello world\\n', got: %s", string(data))
 	}
 	// 验证 hash 已记录
-	if _, ok := ReadFiles[f]; !ok {
+	ReadFiles.MU.RLock()
+	_, ok := ReadFiles.ReadFiles[f]
+	ReadFiles.MU.RUnlock()
+	if !ok {
 		t.Fatal("expected file to be recorded in ReadFiles after write")
 	}
 }
@@ -86,7 +89,9 @@ func TestWriteFile_ReadThenOverwrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hash error: %v", err)
 	}
-	ReadFiles[f] = hash
+	ReadFiles.MU.Lock()
+	ReadFiles.ReadFiles[f] = hash
+	ReadFiles.MU.Unlock()
 
 	// 现在覆盖写入应该成功
 	err = writeFile(f, "new content")
@@ -107,7 +112,9 @@ func TestWriteFile_FileModifiedAfterRead(t *testing.T) {
 
 	// 读取并记录 hash
 	hash, _ := tools.HashFile(f)
-	ReadFiles[f] = hash
+	ReadFiles.MU.Lock()
+	ReadFiles.ReadFiles[f] = hash
+	ReadFiles.MU.Unlock()
 
 	// 外部修改文件（模拟其他进程修改）
 	os.WriteFile(f, []byte("version2 by external"), 0644)

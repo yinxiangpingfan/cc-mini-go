@@ -75,3 +75,8 @@ var BashPrompt = strings.ReplaceAll(`
         "   - Do not sleep between commands that can run immediately \u2014 just run them.\n"
         "   - Do not retry failing commands in a sleep loop \u2014 diagnose the root cause.\n"
         "   - If you must sleep, keep the duration short (1-5 seconds) to avoid blocking the user."`, "\u00a7", "`")
+
+var ToDoListPrompt = `"Create or replace the task checklist shown to the user. "
+        "Use when starting a multi-step task to track progress. "
+        "Each item has a subject (brief imperative title) and an optional "
+        "initial status (pending by default)."`

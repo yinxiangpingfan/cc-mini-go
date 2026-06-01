@@ -117,20 +117,20 @@ func (t *Tools) BashToolForLLM() client.Tool {
 			Description: prompt.BashPrompt,
 			Parameters: client.FunctionParameters{
 				Type: "object",
-				Properties: map[string]client.ParameterProperty{
-					"command": {
+				Properties: map[string]any{
+					"command": client.ParameterProperty{
 						Type:        "string",
 						Description: "The bash command to execute",
 					},
-					"description": {
+					"description": client.ParameterProperty{
 						Type:        "string",
 						Description: "Clear, concise description of what this command does in active voice",
 					},
-					"timeout": {
+					"timeout": client.ParameterProperty{
 						Type:        "integer",
 						Description: "Timeout in seconds",
 					},
-					"dangerously_disable_sandbox": {
+					"dangerously_disable_sandbox": client.ParameterProperty{
 						Type:        "boolean",
 						Description: "If true and allowed by config, run outside sandbox",
 					},

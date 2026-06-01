@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/yinxiangpingfan/cc-mini-go/client"
 	"github.com/yinxiangpingfan/cc-mini-go/errors"
@@ -26,6 +27,12 @@ type response struct {
 
 // maxFileSize 允许读取的最大文件大小（1gb）
 const maxFileSize = 1 * 1024 * 1024 * 1024
+
+// 记录当前会话中已经读取过的文件路径和哈希值
+type ReadedFile struct {
+	ReadFiles map[string]string //记录当前会话中已经读取过的文件路径和哈希值
+	MU        sync.RWMutex
+}
 
 func readFile(filePath string, offset int, limit int) (content string, totalLines int, startLine int, endLines int, isDirectory bool, truncated bool, isBinaryFile bool, err error) {
 	// 1. 检查文件是否存在
@@ -135,7 +142,9 @@ func NewReadFile() *Tools {
 			if err != nil {
 				return jsonErr(fmt.Errorf("%w: %w", errors.ErrHashFile, err).Error())
 			}
-			ReadFiles[filePath] = hash
+			ReadFiles.MU.Lock()
+			defer ReadFiles.MU.Unlock()
+			ReadFiles.ReadFiles[filePath] = hash
 			return string(jsonBytes)
 		},
 	}
@@ -149,16 +158,16 @@ func (t *Tools) ReadFileInfoForLLm() client.Tool {
 			Description: prompt.ReadFilePrompt,
 			Parameters: client.FunctionParameters{
 				Type: "object",
-				Properties: map[string]client.ParameterProperty{
-					"file_path": {
+				Properties: map[string]any{
+					"file_path": client.ParameterProperty{
 						Type:        "string",
 						Description: "Absolute path to the file",
 					},
-					"offset": {
+					"offset": client.ParameterProperty{
 						Type:        "integer",
 						Description: "Line to start from (1-indexed) default 1",
 					},
-					"limit": {
+					"limit": client.ParameterProperty{
 						Type:        "integer",
 						Description: "Max lines to return (default 2000)",
 					},

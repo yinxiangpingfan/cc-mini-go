@@ -24,7 +24,8 @@ cc-mini-go/
 │   ├── time.go        # time_now (IANA timezone)
 │   ├── read.go        # read_file (with binary detection, pagination, hash tracking)
 │   ├── edit.go        # edit_file (WIP)
-│   └── write.go       # write_file (hash-verified write protection)
+│   ├── write.go       # write_file (hash-verified write protection)
+│   └── bash.go        # Bash (shell command execution, timeout control, output truncation)
 ├── client/            # HTTP client & protocol types
 │   ├── init.go        # Client initialization
 │   ├── call.go        # Request dispatch (stream & non-stream)
@@ -102,6 +103,9 @@ go test -v ./test -run '^TestAgent$'
 
 # read_file unit tests
 go test -v ./agent_tools/ -run TestReadFile
+
+# Bash unit tests
+go test -v ./agent_tools/ -run TestBash
 ```
 
 ## Agent Loop
@@ -131,6 +135,7 @@ User Message
 | `time_now` | Get current time in specified timezone | `region` (string, required, IANA format) |
 | `read_file` | Read file with line numbers, binary detection, pagination | `file_path` (required), `offset` (default 1), `limit` (default 2000) |
 | `write_file` | Write file with read-before-write hash verification | `file_path` (required), `content` (required) |
+| `Bash` | Execute shell commands, capture stdout/stderr, timeout control, auto-truncate output at 10,000 chars | `command` (required), `description` (optional), `timeout` (seconds, default 120), `dangerously_disable_sandbox` (bool, default false) |
 
 ## Adding a New Tool
 
@@ -152,6 +157,7 @@ type Tools struct {
 - **`content: null` vs `""`** - When assistant has no text content (only tool_calls), `Content` is set to `nil` (serializes as `null`) to comply with API expectations
 - **Stream tool_call ID handling** - Some APIs send `"id": ""` in subsequent SSE chunks; the parser only accepts non-empty IDs to prevent overwriting
 - **SHA256 write protection** - `read_file` records file hash; `write_file` verifies hash consistency before overwriting. If the file was externally modified, write is rejected until re-read
+- **Bash safety design** - Auto-kill on timeout via `context.WithTimeout`, output truncated to 10,000 chars with original length reported, stdout/stderr presented in separate sections, non-zero exit codes surfaced to the LLM
 
 ## License
 
