@@ -48,7 +48,7 @@ func TestAgentStream(t *testing.T) {
 	call := client.NewCall(cl, cm, log)
 	a := agent.NewChatCompletionAgent(&cf, call)
 	res, err := a.StreamAgent([]client.Message{
-		*cm.NewUserMessage("你好，现在东京几点啊，并且在/Users/easyimpr/Desktop/cc-mini-go/test/data目录下创建一个test.txt文件，内容为hello.txt，如果有东西就覆盖"),
+		*cm.NewUserMessage("你好，现在东京几点啊，并且在/Users/easyimpr/Desktop/cc-mini-go/test/data目录下创建一个test.txt文件，内容为hello.txt，如果有东西就覆盖，请你调用todolist工具"),
 	}, prompt.SystemPrompt)
 	if err != nil {
 		t.Error(err)

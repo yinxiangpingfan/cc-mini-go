@@ -1,5 +1,10 @@
 package agent_tools
 
+import (
+	"encoding/json"
+	"sync"
+)
+
 type Tools struct {
 	//工具的名称
 	Name string
@@ -8,4 +13,18 @@ type Tools struct {
 }
 
 // ReadFiles 记录当前会话中已经读取过的文件路径和哈希值
-var ReadFiles = make(map[string]string)
+var ReadFiles = ReadedFile{
+	ReadFiles: make(map[string]string),
+	MU:        sync.RWMutex{},
+}
+
+func jsonErr(msg string) string {
+	b, _ := json.Marshal(map[string]string{"error": msg})
+	return string(b)
+}
+
+var ToDoList PlanningState = PlanningState{
+	Items:             []PlanItem{},
+	RoundsSinceUpdate: 0,
+	MU:                sync.RWMutex{},
+}

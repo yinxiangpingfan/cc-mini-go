@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/yinxiangpingfan/cc-mini-go/agent_tools"
 	"github.com/yinxiangpingfan/cc-mini-go/client"
 	"github.com/yinxiangpingfan/cc-mini-go/config"
 	"github.com/yinxiangpingfan/cc-mini-go/errors"
@@ -32,8 +33,25 @@ func (a *ChatCompletionAgent) Agent(messages []client.Message, system string) ([
 	//存储工具信息与调用函数
 	tools := make(map[string]func(input map[string]any) string)
 	clientTool := a.ToolInit(&tools)
+
 	//开始请求LLM
 	for {
+		// 本轮计数 +1（计划已多少轮未更新）
+		agent_tools.ToDoList.MU.Lock()
+		if len(agent_tools.ToDoList.Items) > 0 {
+			agent_tools.ToDoList.RoundsSinceUpdate++
+		}
+		agent_tools.ToDoList.MU.Unlock()
+
+		// 检查是否需要刷新计划
+		agent_tools.ToDoList.MU.RLock()
+		needReminder := agent_tools.ToDoList.RoundsSinceUpdate >= 3
+		agent_tools.ToDoList.MU.RUnlock()
+		if needReminder {
+			reminder := a.call.Cm.NewUserMessage("<reminder>Refresh your plan before continuing.</reminder>")
+			allMsg = append(allMsg, reminder)
+		}
+
 		res, resp, err := a.call.NewCallRequest(a.cf.Model, allMsg, false, system, clientTool, nil)
 		if err != nil {
 			//TODO:处理错误

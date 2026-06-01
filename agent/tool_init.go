@@ -12,9 +12,15 @@ func (a *ChatCompletionAgent) ToolInit(tools *map[string]func(input map[string]a
 	(*tools)[readFileTool.Name] = readFileTool.Func
 	writeFileTool := tool.NewWriteFileTool()
 	(*tools)[writeFileTool.Name] = writeFileTool.Func
+	baseTool := tool.NewBashTool()
+	(*tools)[baseTool.Name] = baseTool.Func
+	todoListTool := tool.NewTodoListTool()
+	(*tools)[todoListTool.Name] = todoListTool.Func
 	return []client.Tool{
 		timeNowTool.TimeNowInfoForLLm(),
 		readFileTool.ReadFileInfoForLLm(),
 		writeFileTool.WriteFileInfoForLLm(),
+		baseTool.BashToolForLLM(),
+		todoListTool.TodoListInfoLLm(),
 	}
 }

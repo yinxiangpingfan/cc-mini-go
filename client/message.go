@@ -49,9 +49,9 @@ type FunctionDefinition struct {
 }
 
 type FunctionParameters struct {
-	Type       string                       `json:"type"` // "object"
-	Properties map[string]ParameterProperty `json:"properties,omitempty"`
-	Required   []string                     `json:"required,omitempty"`
+	Type       string         `json:"type"` // "object"
+	Properties map[string]any `json:"properties,omitempty"`
+	Required   []string       `json:"required,omitempty"`
 }
 
 type ParameterProperty struct {

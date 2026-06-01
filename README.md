@@ -26,7 +26,8 @@ cc-mini-go/
 │   ├── time.go        # time_now（IANA 时区）
 │   ├── read.go        # read_file（二进制检测、分页、hash 记录）
 │   ├── edit.go        # edit_file（开发中）
-│   └── write.go       # write_file（hash 校验写入保护）
+│   ├── write.go       # write_file（hash 校验写入保护）
+│   └── bash.go        # bash（执行 shell 命令，超时控制，输出截断）
 ├── client/            # HTTP 客户端 & 协议类型
 │   ├── init.go        # 客户端初始化
 │   ├── call.go        # 请求分发（流式 & 非流式）
@@ -104,6 +105,9 @@ go test -v ./test -run '^TestAgent$'
 
 # read_file 单元测试
 go test -v ./agent_tools/ -run TestReadFile
+
+# bash 单元测试
+go test -v ./agent_tools/ -run TestBash
 ```
 
 ## Agent 循环流程
@@ -133,6 +137,7 @@ go test -v ./agent_tools/ -run TestReadFile
 | `time_now` | 获取指定时区的当前时间 | `region`（string，必填，IANA 格式如 `Asia/Tokyo`） |
 | `read_file` | 读取文件内容，支持行号、二进制检测、分页 | `file_path`（必填）、`offset`（默认 1）、`limit`（默认 2000） |
 | `write_file` | 写入文件，内置 read-before-write hash 校验 | `file_path`（必填）、`content`（必填） |
+| `Bash` | 执行 shell 命令，捕获 stdout/stderr，超时控制，超长输出自动截断（10000 字符） | `command`（必填）、`description`（可选）、`timeout`（秒，默认 120）、`dangerously_disable_sandbox`（bool，默认 false） |
 
 ## 添加新工具
 
@@ -154,6 +159,7 @@ type Tools struct {
 - **`content: null` vs `""`** - 当 assistant 只有工具调用没有文本时，`Content` 设为 `nil`（序列化为 `null`），符合 API 协议预期
 - **流式 tool_call ID 处理** - 部分 API 在后续 SSE chunk 中发送 `"id": ""`，解析器仅接受非空 ID，防止覆盖首个 chunk 中的正确值
 - **SHA256 写入保护** - `read_file` 记录文件 hash，`write_file` 覆盖前校验 hash 一致性；文件被外部修改则拒绝写入，要求重新读取
+- **Bash 安全设计** - 超时自动 kill（`context.WithTimeout`），超长输出截断至 10000 字符并附原始长度，stdout/stderr 分段展示，非零退出码透传给 LLM
 
 ## License
 

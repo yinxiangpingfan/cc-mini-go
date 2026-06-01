@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/yinxiangpingfan/cc-mini-go/agent_tools"
 	"github.com/yinxiangpingfan/cc-mini-go/client"
 )
 
@@ -88,6 +89,22 @@ func (a *ChatCompletionAgent) StreamAgent(messages []client.Message, system stri
 		//每轮开始前重置累积器
 		contentBuilder.Reset()
 		activeToolCalls = make(map[int]*client.StreamToolCall)
+
+		// 本轮计数 +1（计划已多少轮未更新）
+		agent_tools.ToDoList.MU.Lock()
+		if len(agent_tools.ToDoList.Items) > 0 {
+			agent_tools.ToDoList.RoundsSinceUpdate++
+		}
+		agent_tools.ToDoList.MU.Unlock()
+
+		// 检查是否需要刷新计划
+		agent_tools.ToDoList.MU.RLock()
+		needReminder := agent_tools.ToDoList.RoundsSinceUpdate >= 3
+		agent_tools.ToDoList.MU.RUnlock()
+		if needReminder {
+			reminder := a.call.Cm.NewUserMessage("<reminder>Refresh your plan before continuing.</reminder>")
+			allMsg = append(allMsg, reminder)
+		}
 
 		_, _, err := a.call.NewCallRequest(a.cf.Model, allMsg, true, system, clientTool, onMessage)
 		if err != nil && !errors.Is(err, io.EOF) {
