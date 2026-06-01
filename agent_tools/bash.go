@@ -99,7 +99,7 @@ func NewBashTool() *Tools {
 				dangerouslyDisableSandbox = false
 			}
 			//执行工具
-			output, err := bashTool(command, description, time.Duration(timeout)*time.Second, dangerouslyDisableSandbox)
+			output, err := bashTool(command, description, time.Duration(timeout*float64(time.Second)), dangerouslyDisableSandbox)
 			if err != nil {
 				return jsonErr(err.Error())
 			}
