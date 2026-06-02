@@ -21,4 +21,16 @@ var (
 	ErrFileNotRead = fmt.Errorf("file must be read before overwriting, please read the file again")
 	// ErrFileModified 文件在读取后被修改
 	ErrFileModified = fmt.Errorf("file has been modified since last read, please read the file again")
+	// ErrBashTimeout bash 命令执行超时，使用时 fmt.Errorf(ErrBashTimeout, timeout)
+	ErrBashTimeout = "command timed out after %s"
+	// ErrBashExec bash 命令无法启动或执行失败
+	ErrBashExec = fmt.Errorf("command execution failed")
+	// ErrInvalidTimezone 时区加载失败
+	ErrInvalidTimezone = fmt.Errorf("invalid timezone")
+	// ErrTodoInProgress 同一时间只能有一个进行中的任务
+	ErrTodoInProgress = fmt.Errorf("only one item can be in_progress at a time")
+	// ErrSubAgentRequest 子 agent 请求失败
+	ErrSubAgentRequest = fmt.Errorf("subagent request failed")
+	// ErrUnknownSkill 加载了不存在的 skill，使用时 fmt.Sprintf(ErrUnknownSkill, name, knownList)
+	ErrUnknownSkill = "unknown skill '%s'. available skills: %s"
 )

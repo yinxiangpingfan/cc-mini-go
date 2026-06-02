@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/yinxiangpingfan/cc-mini-go/client"
+	"github.com/yinxiangpingfan/cc-mini-go/errors"
 	"github.com/yinxiangpingfan/cc-mini-go/prompt"
 )
 
@@ -201,7 +202,7 @@ func (r *SkillRegistry) LoadFullText(name string) string {
 			sort.Strings(names)
 			known = strings.Join(names, ", ")
 		}
-		return jsonErr(fmt.Sprintf("unknown skill '%s'. available skills: %s", name, known))
+		return jsonErr(fmt.Sprintf(errors.ErrUnknownSkill, name, known))
 	}
 	return fmt.Sprintf("<skill name=\"%s\">\n%s\n</skill>", doc.Manifest.Name, doc.Body)
 }
@@ -229,7 +230,7 @@ func NewLoadSkillTool(registry *SkillRegistry) *Tools {
 		Func: func(args map[string]any) string {
 			name, ok := args["name"].(string)
 			if !ok || name == "" {
-				return jsonErr("name parameter is required")
+				return jsonErr(fmt.Sprintf(errors.ErrToolFunctionCall, "name"))
 			}
 			return registry.LoadFullText(name)
 		},

@@ -34,7 +34,7 @@ func (r *SubAgentRunner) run(taskPrompt string) string {
 	for turn := 0; turn < subAgentMaxTurns; turn++ {
 		res, resp, err := r.call.NewCallRequest(r.model, subMessages, false, r.system, childTools, nil)
 		if err != nil {
-			return jsonErr(fmt.Sprintf("subagent request failed: %v", err))
+			return jsonErr(fmt.Errorf("%w: %w", errors.ErrSubAgentRequest, err).Error())
 		}
 		if resp.StatusCode != 200 {
 			return jsonErr(fmt.Sprintf(errors.ErrHTTPStatusCode, resp.StatusCode))
@@ -122,7 +122,7 @@ func NewSubAgentTools(call *client.Call, model string) *Tools {
 			// 校验必填参数 prompt
 			taskPrompt, ok := args["prompt"].(string)
 			if !ok || taskPrompt == "" {
-				return jsonErr("prompt parameter is required")
+				return jsonErr(fmt.Sprintf(errors.ErrToolFunctionCall, "prompt"))
 			}
 			return runner.run(taskPrompt)
 		},

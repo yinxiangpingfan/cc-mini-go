@@ -11,13 +11,14 @@ import (
 
 func NewTimeNowTool() *Tools {
 	timeNowToolUse := func(args map[string]interface{}) string {
-		region, exists := args["region"]
-		if !exists {
+		region, ok := args["region"].(string)
+		if !ok || region == "" {
 			return jsonErr(fmt.Sprintf(errors.ErrToolFunctionCall, "region"))
 		}
-		res, err := timeNow(region.(string))
+		res, err := timeNow(region)
 		if err != nil {
-			return jsonErr(fmt.Sprintf(errors.ErrToolFunctionCall, "region"))
+			// 透传真实错误（如 "unknown time zone XXX"），便于 LLM 纠正
+			return jsonErr(err.Error())
 		}
 		b, _ := json.Marshal(map[string]string{"time": res})
 		return string(b)
@@ -29,11 +30,10 @@ func NewTimeNowTool() *Tools {
 }
 
 func timeNow(region string) (string, error) {
-	// 1. 加载时区
-	loc, err := time.LoadLocation(region) // 或 "America/New_York", "UTC"
+	// 1. 加载时区（如 "America/New_York", "UTC", "Asia/Shanghai"）
+	loc, err := time.LoadLocation(region)
 	if err != nil {
-		fmt.Println("时区加载失败:", err)
-		return "", err
+		return "", fmt.Errorf("%w: %w", errors.ErrInvalidTimezone, err)
 	}
 
 	// 2. 获取指定时区的当前时间

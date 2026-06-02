@@ -55,14 +55,14 @@ func bashTool(command string, description string, timeout time.Duration, dangero
 	if err != nil {
 		// 检查是否是超时错误
 		if ctx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("Error: Command timed out after %s", timeout)
+			return "", fmt.Errorf(errors.ErrBashTimeout, timeout)
 		}
 		// 尝试获取退出码（非超时）
 		if exitError, ok := err.(*exec.ExitError); ok {
 			exitCode = exitError.ExitCode()
 		} else {
 			// 其他异常（如无法启动进程）
-			return "", fmt.Errorf("Error: %v", err)
+			return "", fmt.Errorf("%w: %w", errors.ErrBashExec, err)
 		}
 	}
 	if exitCode != 0 {

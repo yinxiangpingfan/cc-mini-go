@@ -40,7 +40,7 @@ func updateTodoList(items []TodoItem) error {
 		}
 	}
 	if inProgressCount > 1 {
-		return fmt.Errorf("only one item can be in_progress at a time")
+		return errors.ErrTodoInProgress
 	}
 
 	planItems := make([]PlanItem, 0, len(items))
