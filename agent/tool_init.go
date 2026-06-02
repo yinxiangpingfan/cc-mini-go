@@ -33,6 +33,12 @@ func (a *ChatCompletionAgent) ToolInit(tools *map[string]func(input map[string]a
 	(*tools)[loadSkillTool.Name] = loadSkillTool.Func
 	compactTool := tool.NewCompactTool()
 	(*tools)[compactTool.Name] = compactTool.Func
+	editFileTool := tool.NewEditFileTool()
+	(*tools)[editFileTool.Name] = editFileTool.Func
+	grepTool := tool.NewGrepTool()
+	(*tools)[grepTool.Name] = grepTool.Func
+	globTool := tool.NewGlobTool()
+	(*tools)[globTool.Name] = globTool.Func
 	return []client.Tool{
 		timeNowTool.TimeNowInfoForLLm(),
 		readFileTool.ReadFileInfoForLLm(),
@@ -42,5 +48,8 @@ func (a *ChatCompletionAgent) ToolInit(tools *map[string]func(input map[string]a
 		subAgentTool.SubAgentInfoForLLM(),
 		loadSkillTool.LoadSkillInfoForLLM(),
 		compactTool.CompactInfoForLLM(),
+		editFileTool.EditFileInfoForLLm(),
+		grepTool.GrepInfoForLLm(),
+		globTool.GlobInfoForLLm(),
 	}
 }

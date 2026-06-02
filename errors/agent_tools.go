@@ -35,4 +35,18 @@ var (
 	ErrUnknownSkill = "unknown skill '%s'. available skills: %s"
 	// ErrCompactSummary 压缩时生成对话摘要失败
 	ErrCompactSummary = fmt.Errorf("failed to summarize conversation for compaction")
+	// ErrPathIsDirectory 目标是目录而非文件
+	ErrPathIsDirectory = fmt.Errorf("path is a directory, not a file")
+	// ErrEditOldStringNotFound edit 的 old_string 在文件中找不到
+	ErrEditOldStringNotFound = fmt.Errorf("old_string not found in file")
+	// ErrEditOldStringNotUnique old_string 出现多次但未开启 replace_all，使用时 fmt.Errorf(ErrEditOldStringNotUnique, count)
+	ErrEditOldStringNotUnique = "old_string is not unique (found %d times); add more surrounding context to make it unique, or set replace_all=true"
+	// ErrEditNoChange old_string 与 new_string 相同，无可替换
+	ErrEditNoChange = fmt.Errorf("old_string and new_string are identical, nothing to replace")
+	// ErrInvalidRegex grep 正则表达式非法
+	ErrInvalidRegex = fmt.Errorf("invalid regular expression")
+	// ErrInvalidGlobPattern glob 模式非法
+	ErrInvalidGlobPattern = fmt.Errorf("invalid glob pattern")
+	// ErrSearchPath 搜索路径无法访问
+	ErrSearchPath = fmt.Errorf("cannot access search path")
 )
