@@ -113,7 +113,7 @@ func (a *ChatCompletionAgent) Agent(ctx context.Context, messages []client.Messa
 						var args map[string]any
 						json.Unmarshal([]byte(v.Function.Arguments), &args)
 						//大结果落盘，只在上下文留预览；safeToolCall 捕获工具 panic 避免崩溃
-						res := agent_tools.PersistLargeOutput(v.Id, safeToolCall(ctx, v.Function.Name, f, args))
+						res := agent_tools.PersistLargeOutput(v.Function.Name, v.Id, safeToolCall(ctx, v.Function.Name, f, args))
 						a.emit(AgentEvent{Type: EventToolResult, ToolName: v.Function.Name, Text: res})
 						mu.Lock()
 						//追加工具返回信息

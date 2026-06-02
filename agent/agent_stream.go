@@ -198,7 +198,7 @@ func (a *ChatCompletionAgent) StreamAgent(ctx context.Context, messages []client
 						json.Unmarshal([]byte(rawArgs), &args)
 					}
 					//大结果落盘，只在上下文留预览；safeToolCall 捕获工具 panic 避免崩溃
-					res := agent_tools.PersistLargeOutput(*v.Id, safeToolCall(ctx, name, f, args))
+					res := agent_tools.PersistLargeOutput(name, *v.Id, safeToolCall(ctx, name, f, args))
 					a.emit(AgentEvent{Type: EventToolResult, ToolName: name, Text: res})
 					mu.Lock()
 					//追加工具返回信息

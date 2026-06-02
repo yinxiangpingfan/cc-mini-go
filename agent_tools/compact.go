@@ -26,9 +26,9 @@ const (
 	// ContextLimit 估算上下文字节数超过该阈值时触发完整压缩
 	ContextLimit = 50000
 	// KeepRecentToolResults 微压缩时保留最近 N 个工具结果的完整内容
-	KeepRecentToolResults = 3
+	KeepRecentToolResults = 5
 	// PersistThreshold 工具输出超过该字符数时落盘，只在上下文留预览
-	PersistThreshold = 30000
+	PersistThreshold = 100_000
 	// PreviewChars 落盘后保留的预览字符数
 	PreviewChars = 2000
 	// microCompactMinLen 短于该长度的工具结果不值得压缩
@@ -96,9 +96,30 @@ func NewCompactState() *CompactState {
 	return &CompactState{}
 }
 
+// persistExemptTools 是「字节预算层」豁免落盘的工具集合（硬退出）。
+//   - read_file：已用 limit 给输出封顶，再落盘让模型用 read_file 读回来是循环荒谬的；
+//     但它仍属于 MicroCompact 的可压缩对象（文件在盘上，要时重读即可）。
+//   - load_skill：skill 正文是「活跃指令」，在源码里本就是 user/text 消息而非 tool_result，
+//     两层（落盘 + microcompact）都不该碰；这里同时在 MicroCompact 里豁免（见 isSkillResult）。
+var persistExemptTools = map[string]bool{
+	"read_file":  true,
+	"load_skill": true,
+}
+
+// isSkillResult 判断一条工具结果是否是 load_skill 加载进来的 skill 正文。
+// LoadFullText 用 <skill name="..."> 包裹，据此识别并在 MicroCompact 中豁免，
+// 模拟源码「skill 是 user/text、不属于 COMPACTABLE_TOOLS」的语义。
+func isSkillResult(content string) bool {
+	return strings.HasPrefix(strings.TrimSpace(content), "<skill")
+}
+
 // PersistLargeOutput 把过大的工具输出落盘，只在上下文里留一个带预览的标记。
-// 小于阈值的输出原样返回。让模型知道「发生了什么」，但不强迫它一直背着整份大输出。
-func PersistLargeOutput(toolID string, output string) string {
+// 小于阈值、或工具在 persistExemptTools 中的输出原样返回。
+// 让模型知道「发生了什么」，但不强迫它一直背着整份大输出。
+func PersistLargeOutput(toolName, toolID, output string) string {
+	if persistExemptTools[toolName] {
+		return output // 字节预算层豁免：交给 MicroCompact 处理
+	}
 	if len(output) <= PersistThreshold {
 		return output
 	}
@@ -150,7 +171,8 @@ func MicroCompact(msgs []any) []any {
 	for i, m := range msgs {
 		if _, hit := compactSet[i]; hit {
 			tm := m.(client.ToolsMessage)
-			if len(tm.Content) > microCompactMinLen && tm.Content != persistedPlaceholder {
+			// skill 正文是活跃指令，豁免微压缩（模拟源码：skill 非 tool_result、不在 COMPACTABLE_TOOLS）
+			if len(tm.Content) > microCompactMinLen && tm.Content != persistedPlaceholder && !isSkillResult(tm.Content) {
 				// 新建结构而非就地改字段：保留 ToolsId 以维持 tool_call 配对
 				out[i] = client.ToolsMessage{
 					Role:    tm.Role,

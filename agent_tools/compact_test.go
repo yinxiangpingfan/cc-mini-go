@@ -3,6 +3,7 @@ package agent_tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -37,7 +38,7 @@ func newCompactTestCall(t *testing.T, srvURL string) *client.Call {
 func TestPersistLargeOutput_BelowThresholdUnchanged(t *testing.T) {
 	useTempStorage(t)
 	out := "short output"
-	if got := PersistLargeOutput("call_1", out); got != out {
+	if got := PersistLargeOutput("bash", "call_1", out); got != out {
 		t.Fatalf("small output should be returned as-is, got: %q", got)
 	}
 	if _, err := os.Stat(toolResultsDir()); err == nil {
@@ -45,10 +46,22 @@ func TestPersistLargeOutput_BelowThresholdUnchanged(t *testing.T) {
 	}
 }
 
+// read_file 在字节预算层被豁免：即便超阈值也不落盘，原样返回（交给 MicroCompact）。
+func TestPersistLargeOutput_ReadFileExempt(t *testing.T) {
+	useTempStorage(t)
+	big := strings.Repeat("A", PersistThreshold+1)
+	if got := PersistLargeOutput("read_file", "call_read", big); got != big {
+		t.Fatalf("read_file output should be exempt from persistence and returned as-is")
+	}
+	if _, err := os.Stat(toolResultsDir()); err == nil {
+		t.Fatal("read_file must not write a persisted file (circular re-read)")
+	}
+}
+
 func TestPersistLargeOutput_AboveThresholdPersists(t *testing.T) {
 	useTempStorage(t)
 	big := strings.Repeat("A", PersistThreshold+1)
-	got := PersistLargeOutput("call_big", big)
+	got := PersistLargeOutput("bash", "call_big", big)
 
 	if !strings.Contains(got, "<persisted-output>") {
 		t.Fatalf("expected persisted-output marker, got: %q", got[:min(80, len(got))])
@@ -95,29 +108,52 @@ func TestMicroCompact_KeepsWhenWithinLimit(t *testing.T) {
 
 func TestMicroCompact_CompactsOlderResults(t *testing.T) {
 	longBody := strings.Repeat("x", microCompactMinLen+10)
-	msgs := []any{
-		toolMsg("t1", longBody), // 最旧 → 应被压缩
-		toolMsg("t2", longBody), // 应被压缩
-		toolMsg("t3", longBody), // 最近 3 个，保留
-		toolMsg("t4", longBody),
-		toolMsg("t5", longBody),
+	// 构造 KeepRecentToolResults + older 条，断言不依赖具体常量值
+	const older = 2
+	total := KeepRecentToolResults + older
+	ids := make([]string, total)
+	msgs := make([]any, 0, total)
+	for i := 0; i < total; i++ {
+		ids[i] = fmt.Sprintf("t%d", i+1)
+		msgs = append(msgs, toolMsg(ids[i], longBody))
 	}
 	out := MicroCompact(msgs)
 
-	if out[0].(client.ToolsMessage).Content != persistedPlaceholder {
-		t.Fatal("oldest tool result should be compacted to placeholder")
+	// 最旧的 older 个应被压成占位，且保留 ToolsId（否则 tool_call 配对断裂）
+	for i := 0; i < older; i++ {
+		if out[i].(client.ToolsMessage).Content != persistedPlaceholder {
+			t.Fatalf("older tool result idx %d should be compacted to placeholder", i)
+		}
+		if out[i].(client.ToolsMessage).ToolsId != ids[i] {
+			t.Fatalf("compacting must preserve ToolsId at idx %d", i)
+		}
 	}
-	if out[1].(client.ToolsMessage).Content != persistedPlaceholder {
-		t.Fatal("second-oldest tool result should be compacted")
-	}
-	for i := 2; i <= 4; i++ {
+	// 最近 KeepRecentToolResults 个应保留完整
+	for i := older; i < total; i++ {
 		if out[i].(client.ToolsMessage).Content != longBody {
 			t.Fatalf("recent tool result idx %d should be kept full", i)
 		}
 	}
-	// ToolsId 必须保留，否则 assistant 的 tool_call 配对会断裂
-	if out[0].(client.ToolsMessage).ToolsId != "t1" {
-		t.Fatal("compacting must preserve ToolsId for tool_call pairing")
+}
+
+// skill 正文即便落在「旧结果」区间，也必须豁免微压缩（活跃指令不能被换成占位）。
+func TestMicroCompact_ExemptsSkillResults(t *testing.T) {
+	skillBody := `<skill name="code-review">` + strings.Repeat("guidance ", 50) + `</skill>`
+	longBody := strings.Repeat("x", microCompactMinLen+10)
+
+	// skill 放在最旧位置，后面塞满 KeepRecentToolResults 条普通结果把它挤出「最近」窗口
+	msgs := []any{toolMsg("skill", skillBody)}
+	for i := 0; i < KeepRecentToolResults+1; i++ {
+		msgs = append(msgs, toolMsg(fmt.Sprintf("t%d", i), longBody))
+	}
+	out := MicroCompact(msgs)
+
+	if got := out[0].(client.ToolsMessage).Content; got != skillBody {
+		t.Fatalf("skill body must survive micro-compaction, got: %.40q", got)
+	}
+	// 对照：紧跟其后的普通旧结果应被压成占位，证明它确实落在压缩区间
+	if out[1].(client.ToolsMessage).Content != persistedPlaceholder {
+		t.Fatal("a non-skill older result alongside the skill should still be compacted")
 	}
 }
 
