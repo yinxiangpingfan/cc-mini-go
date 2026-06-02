@@ -129,10 +129,60 @@ func TestBackoffDelay_PositiveAndCapped(t *testing.T) {
 		if d <= 0 {
 			t.Fatalf("attempt %d: delay should be positive, got %v", attempt, d)
 		}
-		// 上限 + 25% 抖动余量
-		if d > maxRetryDelay+maxRetryDelay/2 {
-			t.Fatalf("attempt %d: delay %v exceeds cap+jitter", attempt, d)
+		// 退避基准封顶 maxRetryDelay，再叠加 0~25% 抖动，故上界 = 1.25×maxRetryDelay
+		max := time.Duration(float64(maxRetryDelay) * (1 + jitterFactor))
+		if d > max {
+			t.Fatalf("attempt %d: delay %v exceeds cap+jitter (%v)", attempt, d, max)
 		}
+	}
+}
+
+func TestParseRetryAfter(t *testing.T) {
+	mk := func(v string) http.Header {
+		h := http.Header{}
+		if v != "" {
+			h.Set("Retry-After", v)
+		}
+		return h
+	}
+	if got := parseRetryAfter(mk("")); got != 0 {
+		t.Fatalf("empty header should be 0, got %v", got)
+	}
+	if got := parseRetryAfter(nil); got != 0 {
+		t.Fatalf("nil header should be 0, got %v", got)
+	}
+	if got := parseRetryAfter(mk("30")); got != 30*time.Second {
+		t.Fatalf("'30' should be 30s, got %v", got)
+	}
+	if got := parseRetryAfter(mk("0")); got != 0 {
+		t.Fatalf("'0' should be 0 (no wait), got %v", got)
+	}
+	if got := parseRetryAfter(mk("-5")); got != 0 {
+		t.Fatalf("negative should be 0, got %v", got)
+	}
+	if got := parseRetryAfter(mk("garbage")); got != 0 {
+		t.Fatalf("unparseable should be 0, got %v", got)
+	}
+	// HTTP-date 形式：未来 ~约定秒数，过去则为 0
+	future := time.Now().Add(45 * time.Second).UTC().Format(http.TimeFormat)
+	if got := parseRetryAfter(mk(future)); got <= 0 || got > 46*time.Second {
+		t.Fatalf("future http-date should be ~45s, got %v", got)
+	}
+	past := time.Now().Add(-time.Hour).UTC().Format(http.TimeFormat)
+	if got := parseRetryAfter(mk(past)); got != 0 {
+		t.Fatalf("past http-date should be 0, got %v", got)
+	}
+}
+
+func TestComputeRetryDelay_RetryAfterTakesPriority(t *testing.T) {
+	// 有 Retry-After 时完全照办，不叠加退避/抖动
+	if got := computeRetryDelay(3, 7*time.Second); got != 7*time.Second {
+		t.Fatalf("Retry-After should be obeyed verbatim, got %v", got)
+	}
+	// 无 Retry-After 时退回退避（落在 [base, cap*1.25] 内）
+	got := computeRetryDelay(1, 0)
+	if got < baseRetryDelay || got > time.Duration(float64(maxRetryDelay)*(1+jitterFactor)) {
+		t.Fatalf("fallback backoff out of range: %v", got)
 	}
 }
 

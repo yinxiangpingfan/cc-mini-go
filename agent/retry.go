@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"io"
 	"math/rand/v2"
+	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/yinxiangpingfan/cc-mini-go/client"
@@ -16,14 +19,17 @@ import (
 // agentMaxTurns agent 主循环最大轮次，防止工具调用陷入无限循环
 const agentMaxTurns = 200
 
+// jitterFactor 退避抖动比例：在退避基准上额外叠加 0~25% 的随机抖动，避免多客户端「惊群」同步重试。
+const jitterFactor = 0.25
+
 // 以下为重试调参，使用包级变量以便测试调小；运行时不应修改。
 var (
 	// maxLLMRetries 单次 LLM 调用的最大重试次数（不含首次）
-	maxLLMRetries = 4
+	maxLLMRetries = 10
 	// baseRetryDelay 指数退避的基准时延
 	baseRetryDelay = 500 * time.Millisecond
 	// maxRetryDelay 退避时延上限
-	maxRetryDelay = 8 * time.Second
+	maxRetryDelay = 32 * time.Second
 )
 
 // isRetryableStatusCode 判断 HTTP 状态码是否值得重试。
@@ -38,24 +44,61 @@ func isRetryableStatusCode(code int) bool {
 	}
 }
 
-// backoffDelay 计算第 attempt 次重试前的等待时长：
-// 指数退避（base * 2^(attempt-1)）+ ±25% 抖动，封顶 maxRetryDelay。
+// parseRetryAfter 解析响应里的 Retry-After 头，返回服务端建议的等待时长（无效则返回 0）。
+// 支持两种形式：① 秒数（如 "30"）；② HTTP-date（如 "Wed, 21 Oct 2025 07:28:00 GMT"）。
+func parseRetryAfter(h http.Header) time.Duration {
+	if h == nil {
+		return 0
+	}
+	v := strings.TrimSpace(h.Get("Retry-After"))
+	if v == "" {
+		return 0
+	}
+	// 形式一：整数秒
+	if secs, err := strconv.Atoi(v); err == nil {
+		if secs <= 0 {
+			return 0
+		}
+		return time.Duration(secs) * time.Second
+	}
+	// 形式二：HTTP-date，换算成距现在的时长
+	if t, err := http.ParseTime(v); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d
+		}
+	}
+	return 0
+}
+
+// backoffDelay 计算第 attempt 次重试前的退避时延：
+// 指数退避 min(base * 2^(attempt-1), maxRetryDelay) + 0~25% 抖动。
 func backoffDelay(attempt int) time.Duration {
 	d := baseRetryDelay << (attempt - 1)
 	if d <= 0 || d > maxRetryDelay {
 		d = maxRetryDelay
 	}
-	jitter := time.Duration(rand.Int64N(int64(d)/2+1)) - d/4
+	jitter := time.Duration(rand.Int64N(int64(float64(d)*jitterFactor) + 1))
 	return d + jitter
+}
+
+// computeRetryDelay 决定第 attempt 次重试前等待多久：
+// 服务端 Retry-After 优先——明确告诉等多久就完全照办，不再叠加退避/抖动；
+// 没有该头时才退回指数退避 + 抖动。
+func computeRetryDelay(attempt int, retryAfter time.Duration) time.Duration {
+	if retryAfter > 0 {
+		return retryAfter
+	}
+	return backoffDelay(attempt)
 }
 
 // callWithRetry 封装非流式 LLM 调用：网络层错误与可重试状态码按指数退避自动重试；
 // 不可重试的状态码（如 401/400）立即返回错误；重试耗尽返回聚合错误。
 func (a *ChatCompletionAgent) callWithRetry(ctx context.Context, allMsg []any, system string, tools []client.Tool) (client.CallResponse, error) {
 	var lastErr error
+	var retryAfter time.Duration // 上一次响应建议的等待时长，优先于退避
 	for attempt := 0; attempt <= maxLLMRetries; attempt++ {
 		if attempt > 0 {
-			delay := backoffDelay(attempt)
+			delay := computeRetryDelay(attempt, retryAfter)
 			a.emit(AgentEvent{Type: EventRetry, Attempt: attempt, Max: maxLLMRetries, Delay: delay, Err: lastErr})
 			// 退避等待期间也响应取消
 			select {
@@ -64,6 +107,7 @@ func (a *ChatCompletionAgent) callWithRetry(ctx context.Context, allMsg []any, s
 			case <-time.After(delay):
 			}
 		}
+		retryAfter = 0 // 本次请求重新判定，清掉上一轮的建议
 		res, resp, err := a.call.NewCallRequestCtx(ctx, a.cf.Model, allMsg, false, system, tools, nil)
 		// 先按状态码分类：拿到响应就以状态码为准（即使响应体解析失败）
 		if resp != nil && resp.StatusCode != 200 {
@@ -71,6 +115,7 @@ func (a *ChatCompletionAgent) callWithRetry(ctx context.Context, allMsg []any, s
 			if !isRetryableStatusCode(resp.StatusCode) {
 				return client.CallResponse{}, statusErr // 确定性错误，立即失败
 			}
+			retryAfter = parseRetryAfter(resp.Header) // 限流/5xx：尊重服务端 Retry-After
 			lastErr = statusErr
 			continue
 		}
@@ -96,10 +141,11 @@ func (a *ChatCompletionAgent) callWithRetry(ctx context.Context, allMsg []any, s
 // 已建立 200 连接后中途出错（可能已输出部分内容）不重试，由调用方按错误返回处理。
 func (a *ChatCompletionAgent) streamWithRetry(ctx context.Context, allMsg []any, system string, tools []client.Tool, reset func(), onMessage func(client.StreamResponse)) error {
 	var lastErr error
+	var retryAfter time.Duration // 上一次响应建议的等待时长，优先于退避
 	for attempt := 0; attempt <= maxLLMRetries; attempt++ {
 		if attempt > 0 {
 			reset()
-			delay := backoffDelay(attempt)
+			delay := computeRetryDelay(attempt, retryAfter)
 			a.emit(AgentEvent{Type: EventRetry, Attempt: attempt, Max: maxLLMRetries, Delay: delay, Err: lastErr})
 			select {
 			case <-ctx.Done():
@@ -107,6 +153,7 @@ func (a *ChatCompletionAgent) streamWithRetry(ctx context.Context, allMsg []any,
 			case <-time.After(delay):
 			}
 		}
+		retryAfter = 0 // 本次请求重新判定，清掉上一轮的建议
 		_, resp, err := a.call.NewCallRequestCtx(ctx, a.cf.Model, allMsg, true, system, tools, onMessage)
 
 		// 取消优先：无论流处于哪个阶段，被取消就直接返回取消错误
@@ -119,6 +166,7 @@ func (a *ChatCompletionAgent) streamWithRetry(ctx context.Context, allMsg []any,
 			if !isRetryableStatusCode(resp.StatusCode) {
 				return statusErr
 			}
+			retryAfter = parseRetryAfter(resp.Header) // 限流/5xx：尊重服务端 Retry-After
 			lastErr = statusErr
 			continue
 		}
