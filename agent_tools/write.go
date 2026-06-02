@@ -1,6 +1,7 @@
 package agent_tools
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -62,7 +63,7 @@ func writeFile(file_Path string, content string) error {
 func NewWriteFileTool() *Tools {
 	return &Tools{
 		Name: "write_file",
-		Func: func(args map[string]interface{}) string {
+		Func: func(ctx context.Context, args map[string]interface{}) string {
 			//从args中获取工具的参数
 			filePath, exists := args["file_path"].(string)
 			if !exists {

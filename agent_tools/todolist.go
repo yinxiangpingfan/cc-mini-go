@@ -1,6 +1,7 @@
 package agent_tools
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -89,7 +90,7 @@ func (p *PlanningState) Render() string {
 func NewTodoListTool() *Tools {
 	return &Tools{
 		Name: "todo_list",
-		Func: func(args map[string]interface{}) string {
+		Func: func(ctx context.Context, args map[string]interface{}) string {
 			raw, exists := args["todos"]
 			if !exists {
 				return jsonErr(fmt.Sprintf(errors.ErrToolFunctionCall, "todos"))

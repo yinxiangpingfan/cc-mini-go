@@ -144,11 +144,11 @@ func toolErrorResult(msg string) string {
 // safeToolCall 执行工具函数并捕获 panic：工具在 goroutine 中运行且无 recover，
 // 任何 panic 都会拖垮整个 agent 进程。这里把 panic 转成普通错误结果回给 LLM，
 // 保证单个工具的崩溃不影响其余工具与主循环。
-func safeToolCall(name string, f func(map[string]any) string, args map[string]any) (result string) {
+func safeToolCall(ctx context.Context, name string, f func(context.Context, map[string]any) string, args map[string]any) (result string) {
 	defer func() {
 		if r := recover(); r != nil {
 			result = toolErrorResult(fmt.Sprintf("tool %q panicked: %v", name, r))
 		}
 	}()
-	return f(args)
+	return f(ctx, args)
 }

@@ -1,6 +1,7 @@
 package agent_tools
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -61,7 +62,7 @@ type globEntry struct {
 
 // globSearch 在 root 目录下递归查找匹配 pattern 的文件，按修改时间倒序返回相对路径。
 // 不含 / 的模式（如 *.go）匹配文件名本身（任意层级）；含 / 的模式匹配相对路径。
-func globSearch(pattern, root string) ([]string, bool, error) {
+func globSearch(ctx context.Context, pattern, root string) ([]string, bool, error) {
 	matchBase := !strings.Contains(pattern, "/")
 	re, err := globToRegexp(pattern)
 	if err != nil {
@@ -78,6 +79,9 @@ func globSearch(pattern, root string) ([]string, bool, error) {
 
 	var entries []globEntry
 	walkErr := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if ctx.Err() != nil {
+			return filepath.SkipAll // 被取消则尽快停止遍历
+		}
 		if err != nil {
 			return nil // 跳过无法访问的项
 		}
@@ -108,6 +112,9 @@ func globSearch(pattern, root string) ([]string, bool, error) {
 	if walkErr != nil {
 		return nil, false, fmt.Errorf("%w: %w", errors.ErrSearchPath, walkErr)
 	}
+	if ctx.Err() != nil {
+		return nil, false, ctx.Err()
+	}
 
 	// 按修改时间倒序（新→旧），时间相同按路径字典序稳定排序
 	sort.Slice(entries, func(i, j int) bool {
@@ -132,7 +139,7 @@ func globSearch(pattern, root string) ([]string, bool, error) {
 func NewGlobTool() *Tools {
 	return &Tools{
 		Name: "glob",
-		Func: func(args map[string]any) string {
+		Func: func(ctx context.Context, args map[string]any) string {
 			pattern, ok := args["pattern"].(string)
 			if !ok || pattern == "" {
 				return jsonErr(fmt.Sprintf(errors.ErrToolFunctionCall, "pattern"))
@@ -141,7 +148,7 @@ func NewGlobTool() *Tools {
 			if !ok || path == "" {
 				path = "."
 			}
-			matches, truncated, err := globSearch(pattern, path)
+			matches, truncated, err := globSearch(ctx, pattern, path)
 			if err != nil {
 				return jsonErr(err.Error())
 			}

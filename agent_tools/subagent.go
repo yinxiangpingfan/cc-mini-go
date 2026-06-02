@@ -1,6 +1,7 @@
 package agent_tools
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -21,18 +22,22 @@ type SubAgentRunner struct {
 
 // run 以全新的消息列表运行一个子 agent，只返回最终的文本摘要。
 // 调用结束后子 agent 的上下文被丢弃 —— 父 agent 的上下文保持干净。
-func (r *SubAgentRunner) run(taskPrompt string) string {
+func (r *SubAgentRunner) run(ctx context.Context, taskPrompt string) string {
 	// 全新上下文：子 agent 不共享父 agent 的对话历史
 	subMessages := []any{*r.call.Cm.NewUserMessage(taskPrompt)}
 
 	// 子 agent 工具集：除 "task" 外的所有基础工具（防止无限递归）
-	childHandlers := make(map[string]func(map[string]any) string)
+	childHandlers := make(map[string]ToolFunc)
 	childTools := buildChildTools(&childHandlers)
 
 	var lastText string
 
 	for turn := 0; turn < subAgentMaxTurns; turn++ {
-		res, resp, err := r.call.NewCallRequest(r.model, subMessages, false, r.system, childTools, nil)
+		// 父 ctx 取消则尽快停止子 agent
+		if ctx.Err() != nil {
+			return jsonErr(ctx.Err().Error())
+		}
+		res, resp, err := r.call.NewCallRequestCtx(ctx, r.model, subMessages, false, r.system, childTools, nil)
 		if err != nil {
 			return jsonErr(fmt.Errorf("%w: %w", errors.ErrSubAgentRequest, err).Error())
 		}
@@ -66,7 +71,7 @@ func (r *SubAgentRunner) run(taskPrompt string) string {
 					defer wg.Done()
 					var args map[string]any
 					json.Unmarshal([]byte(tc.Function.Arguments), &args)
-					result := f(args)
+					result := f(ctx, args)
 					mu.Lock()
 					subMessages = append(subMessages, *r.call.Cm.NewToolsMessage(tc.Id, result))
 					mu.Unlock()
@@ -84,7 +89,7 @@ func (r *SubAgentRunner) run(taskPrompt string) string {
 
 // buildChildTools 初始化子 agent 可用的只读 + 写入工具集。
 // 故意排除 "task" 工具以防止递归派生子 agent。
-func buildChildTools(handlers *map[string]func(map[string]any) string) []client.Tool {
+func buildChildTools(handlers *map[string]ToolFunc) []client.Tool {
 	timeNow := NewTimeNowTool()
 	(*handlers)[timeNow.Name] = timeNow.Func
 
@@ -118,13 +123,13 @@ func NewSubAgentTools(call *client.Call, model string) *Tools {
 	}
 	return &Tools{
 		Name: "task",
-		Func: func(args map[string]any) string {
+		Func: func(ctx context.Context, args map[string]any) string {
 			// 校验必填参数 prompt
 			taskPrompt, ok := args["prompt"].(string)
 			if !ok || taskPrompt == "" {
 				return jsonErr(fmt.Sprintf(errors.ErrToolFunctionCall, "prompt"))
 			}
-			return runner.run(taskPrompt)
+			return runner.run(ctx, taskPrompt)
 		},
 	}
 }

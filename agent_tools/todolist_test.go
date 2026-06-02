@@ -1,6 +1,7 @@
 package agent_tools
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -139,7 +140,7 @@ func TestUpdateTodoList_ReplacesPreviousPlan(t *testing.T) {
 func TestTodoListTool_MissingTodosArg(t *testing.T) {
 	resetTodoList(t)
 	tool := NewTodoListTool()
-	out := tool.Func(map[string]interface{}{})
+	out := tool.Func(context.Background(), map[string]interface{}{})
 
 	var resp map[string]string
 	if err := json.Unmarshal([]byte(out), &resp); err != nil {
@@ -153,7 +154,7 @@ func TestTodoListTool_MissingTodosArg(t *testing.T) {
 func TestTodoListTool_ValidTodos(t *testing.T) {
 	resetTodoList(t)
 	tool := NewTodoListTool()
-	out := tool.Func(map[string]interface{}{
+	out := tool.Func(context.Background(), map[string]interface{}{
 		"todos": []map[string]interface{}{
 			{"subject": "买菜", "status": "pending"},
 			{"subject": "写代码", "status": "in_progress"},
@@ -183,7 +184,7 @@ func TestTodoListTool_ValidTodos(t *testing.T) {
 func TestTodoListTool_MultipleInProgressReturnsError(t *testing.T) {
 	resetTodoList(t)
 	tool := NewTodoListTool()
-	out := tool.Func(map[string]interface{}{
+	out := tool.Func(context.Background(), map[string]interface{}{
 		"todos": []map[string]interface{}{
 			{"subject": "任务A", "status": "in_progress"},
 			{"subject": "任务B", "status": "in_progress"},
@@ -206,7 +207,7 @@ func TestTodoListTool_MultipleInProgressReturnsError(t *testing.T) {
 func TestTodoListTool_OutputIsValidJSON(t *testing.T) {
 	resetTodoList(t)
 	tool := NewTodoListTool()
-	out := tool.Func(map[string]interface{}{
+	out := tool.Func(context.Background(), map[string]interface{}{
 		"todos": []map[string]interface{}{
 			{"subject": "单个任务", "status": "pending"},
 		},

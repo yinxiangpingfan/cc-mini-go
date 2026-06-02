@@ -1,6 +1,7 @@
 package agent_tools
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -17,7 +18,7 @@ type globResult struct {
 
 func runGlob(t *testing.T, args map[string]any) globResult {
 	t.Helper()
-	out := NewGlobTool().Func(args)
+	out := NewGlobTool().Func(context.Background(), args)
 	var r globResult
 	if err := json.Unmarshal([]byte(out), &r); err != nil {
 		t.Fatalf("output not JSON: %v, raw: %s", err, out)
@@ -136,7 +137,7 @@ func TestGlob_SkipsGitDir(t *testing.T) {
 }
 
 func TestGlob_PathNotExist(t *testing.T) {
-	out := NewGlobTool().Func(map[string]any{"pattern": "*.go", "path": filepath.Join(t.TempDir(), "nope")})
+	out := NewGlobTool().Func(context.Background(), map[string]any{"pattern": "*.go", "path": filepath.Join(t.TempDir(), "nope")})
 	var resp map[string]any
 	json.Unmarshal([]byte(out), &resp)
 	if _, ok := resp["error"]; !ok {
@@ -148,7 +149,7 @@ func TestGlob_PathIsFile(t *testing.T) {
 	root := t.TempDir()
 	f := filepath.Join(root, "a.go")
 	mustWrite(t, f, "x")
-	out := NewGlobTool().Func(map[string]any{"pattern": "*.go", "path": f})
+	out := NewGlobTool().Func(context.Background(), map[string]any{"pattern": "*.go", "path": f})
 	var resp map[string]any
 	json.Unmarshal([]byte(out), &resp)
 	if _, ok := resp["error"]; !ok {
@@ -157,7 +158,7 @@ func TestGlob_PathIsFile(t *testing.T) {
 }
 
 func TestGlob_MissingPattern(t *testing.T) {
-	out := NewGlobTool().Func(map[string]any{})
+	out := NewGlobTool().Func(context.Background(), map[string]any{})
 	var resp map[string]any
 	json.Unmarshal([]byte(out), &resp)
 	if _, ok := resp["error"]; !ok {

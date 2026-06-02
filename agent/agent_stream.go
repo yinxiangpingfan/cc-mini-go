@@ -20,7 +20,7 @@ func (a *ChatCompletionAgent) StreamAgent(ctx context.Context, messages []client
 		allMsg = append(allMsg, m)
 	}
 	//存储工具信息与调用函数
-	tools := make(map[string]func(input map[string]any) string)
+	tools := make(map[string]agent_tools.ToolFunc)
 	clientTool := a.ToolInit(&tools)
 	//把 skill 目录拼进 system prompt（轻量发现层）
 	system = a.withSkillCatalog(system)
@@ -198,7 +198,7 @@ func (a *ChatCompletionAgent) StreamAgent(ctx context.Context, messages []client
 						json.Unmarshal([]byte(rawArgs), &args)
 					}
 					//大结果落盘，只在上下文留预览；safeToolCall 捕获工具 panic 避免崩溃
-					res := agent_tools.PersistLargeOutput(*v.Id, safeToolCall(name, f, args))
+					res := agent_tools.PersistLargeOutput(*v.Id, safeToolCall(ctx, name, f, args))
 					a.emit(AgentEvent{Type: EventToolResult, ToolName: name, Text: res})
 					mu.Lock()
 					//追加工具返回信息

@@ -1,6 +1,7 @@
 package agent_tools
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -39,7 +40,7 @@ func mustWrite(t *testing.T, path, content string) {
 
 func runGrep(t *testing.T, args map[string]any) grepResult {
 	t.Helper()
-	out := NewGrepTool().Func(args)
+	out := NewGrepTool().Func(context.Background(), args)
 	var r grepResult
 	if err := json.Unmarshal([]byte(out), &r); err != nil {
 		t.Fatalf("output not JSON: %v, raw: %s", err, out)
@@ -142,7 +143,7 @@ func TestGrep_SingleFilePath(t *testing.T) {
 
 func TestGrep_InvalidRegex(t *testing.T) {
 	root := setupGrepTree(t)
-	out := NewGrepTool().Func(map[string]any{"pattern": "func(", "path": root})
+	out := NewGrepTool().Func(context.Background(), map[string]any{"pattern": "func(", "path": root})
 	var resp map[string]any
 	json.Unmarshal([]byte(out), &resp)
 	if _, ok := resp["error"]; !ok {
@@ -151,7 +152,7 @@ func TestGrep_InvalidRegex(t *testing.T) {
 }
 
 func TestGrep_MissingPattern(t *testing.T) {
-	out := NewGrepTool().Func(map[string]any{})
+	out := NewGrepTool().Func(context.Background(), map[string]any{})
 	var resp map[string]any
 	json.Unmarshal([]byte(out), &resp)
 	if _, ok := resp["error"]; !ok {
@@ -160,7 +161,7 @@ func TestGrep_MissingPattern(t *testing.T) {
 }
 
 func TestGrep_InvalidOutputMode(t *testing.T) {
-	out := NewGrepTool().Func(map[string]any{"pattern": "x", "output_mode": "bogus"})
+	out := NewGrepTool().Func(context.Background(), map[string]any{"pattern": "x", "output_mode": "bogus"})
 	var resp map[string]any
 	json.Unmarshal([]byte(out), &resp)
 	if _, ok := resp["error"]; !ok {

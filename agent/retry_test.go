@@ -139,14 +139,14 @@ func TestBackoffDelay_PositiveAndCapped(t *testing.T) {
 // ---------- safeToolCall ----------
 
 func TestSafeToolCall_Passthrough(t *testing.T) {
-	got := safeToolCall("ok", func(m map[string]any) string { return `{"ok":true}` }, nil)
+	got := safeToolCall(context.Background(), "ok", func(ctx context.Context, m map[string]any) string { return `{"ok":true}` }, nil)
 	if got != `{"ok":true}` {
 		t.Fatalf("expected passthrough result, got: %s", got)
 	}
 }
 
 func TestSafeToolCall_RecoversPanic(t *testing.T) {
-	got := safeToolCall("boom", func(m map[string]any) string { panic("kaboom") }, nil)
+	got := safeToolCall(context.Background(), "boom", func(ctx context.Context, m map[string]any) string { panic("kaboom") }, nil)
 	var resp map[string]string
 	if err := json.Unmarshal([]byte(got), &resp); err != nil {
 		t.Fatalf("panic result not JSON: %v, raw: %s", err, got)

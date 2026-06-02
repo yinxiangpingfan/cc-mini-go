@@ -318,7 +318,7 @@ func DetectManualCompact(toolCalls []client.ToolCall) (bool, string) {
 func NewCompactTool() *Tools {
 	return &Tools{
 		Name: CompactToolName,
-		Func: func(args map[string]any) string {
+		Func: func(ctx context.Context, args map[string]any) string {
 			return "Compacting conversation..."
 		},
 	}

@@ -1,6 +1,7 @@
 package agent_tools
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -94,7 +95,7 @@ func editFile(filePath string, oldString string, newString string, replaceAll bo
 func NewEditFileTool() *Tools {
 	return &Tools{
 		Name: "edit_file",
-		Func: func(args map[string]interface{}) string {
+		Func: func(ctx context.Context, args map[string]interface{}) string {
 			filePath, ok := args["file_path"].(string)
 			if !ok || filePath == "" {
 				return jsonErr(fmt.Sprintf(errors.ErrToolFunctionCall, "file_path"))

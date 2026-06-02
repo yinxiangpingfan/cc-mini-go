@@ -1,6 +1,7 @@
 package agent_tools
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -10,7 +11,7 @@ import (
 )
 
 func NewTimeNowTool() *Tools {
-	timeNowToolUse := func(args map[string]interface{}) string {
+	timeNowToolUse := func(ctx context.Context, args map[string]interface{}) string {
 		region, ok := args["region"].(string)
 		if !ok || region == "" {
 			return jsonErr(fmt.Sprintf(errors.ErrToolFunctionCall, "region"))

@@ -21,17 +21,17 @@ import (
 const DefaultTimeout = 120 * time.Second
 const maxOutputChars = 10000
 
-func bashTool(command string, description string, timeout time.Duration, dangerouslyDisableSandbox bool) (string, error) {
+func bashTool(ctx context.Context, command string, description string, timeout time.Duration, dangerouslyDisableSandbox bool) (string, error) {
 	//TODO:沙箱
 	dangerouslyDisableSandbox = true
 	//先默认禁用沙箱
 	if timeout <= 0 {
 		timeout = DefaultTimeout
 	}
-	// 构建命令
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	// 构建命令：派生自传入 ctx，父 ctx 取消会立刻终止命令（超时与取消二者先到先生效）
+	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, os.Getenv("SHELL"), "-c", command)
+	cmd := exec.CommandContext(cmdCtx, os.Getenv("SHELL"), "-c", command)
 	var stdoutBuf, stderrBuf bytes.Buffer
 	cmd.Stdout = &stdoutBuf
 	cmd.Stderr = &stderrBuf
@@ -53,8 +53,12 @@ func bashTool(command string, description string, timeout time.Duration, dangero
 	//错误处理
 	exitCode := 0
 	if err != nil {
+		// 父 ctx 被取消（用户中断）优先返回取消错误
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
 		// 检查是否是超时错误
-		if ctx.Err() == context.DeadlineExceeded {
+		if cmdCtx.Err() == context.DeadlineExceeded {
 			return "", fmt.Errorf(errors.ErrBashTimeout, timeout)
 		}
 		// 尝试获取退出码（非超时）
@@ -77,7 +81,7 @@ func bashTool(command string, description string, timeout time.Duration, dangero
 func NewBashTool() *Tools {
 	return &Tools{
 		Name: "Bash",
-		Func: func(args map[string]interface{}) string {
+		Func: func(ctx context.Context, args map[string]interface{}) string {
 			//从args中获取工具的参数
 			command, exists := args["command"].(string)
 			if !exists {
@@ -99,7 +103,7 @@ func NewBashTool() *Tools {
 				dangerouslyDisableSandbox = false
 			}
 			//执行工具
-			output, err := bashTool(command, description, time.Duration(timeout*float64(time.Second)), dangerouslyDisableSandbox)
+			output, err := bashTool(ctx, command, description, time.Duration(timeout*float64(time.Second)), dangerouslyDisableSandbox)
 			if err != nil {
 				return jsonErr(err.Error())
 			}

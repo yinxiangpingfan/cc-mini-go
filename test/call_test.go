@@ -1,6 +1,7 @@
 package test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -94,7 +95,7 @@ func TestCallWithTool(t *testing.T) {
 			t.Log("Tool call: ", res.Choices[0].Message.ToolCalls[0].Function.Arguments)
 			var args map[string]interface{}
 			json.Unmarshal([]byte(res.Choices[0].Message.ToolCalls[0].Function.Arguments), &args)
-			res := tool.Func(args)
+			res := tool.Func(context.Background(), args)
 			t.Log("Tool call result: ", res)
 		}
 	}
@@ -171,7 +172,7 @@ func TestCallWithToolStream(t *testing.T) {
 			t.Log("Tool call: ", *activeCall.Function.Arguments)
 			var args map[string]interface{}
 			json.Unmarshal([]byte(*activeCall.Function.Arguments), &args)
-			res := tool.Func(args)
+			res := tool.Func(context.Background(), args)
 			t.Log("Tool call result: ", res)
 		}
 	}
@@ -271,7 +272,7 @@ func TestCallWithImageStream(t *testing.T) {
 			t.Log("Tool call: ", *activeCall.Function.Arguments)
 			var args map[string]interface{}
 			json.Unmarshal([]byte(*activeCall.Function.Arguments), &args)
-			res := tool.Func(args)
+			res := tool.Func(context.Background(), args)
 			t.Log("Tool call result: ", res)
 		}
 	}
@@ -351,7 +352,7 @@ func TestCallWithImageStreamBase64(t *testing.T) {
 			t.Log("Tool call: ", *activeCall.Function.Arguments)
 			var args map[string]interface{}
 			json.Unmarshal([]byte(*activeCall.Function.Arguments), &args)
-			res := tool.Func(args)
+			res := tool.Func(context.Background(), args)
 			t.Log("Tool call result: ", res)
 		}
 	}

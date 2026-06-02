@@ -1,6 +1,7 @@
 package agent_tools
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -21,7 +22,7 @@ const grepDefaultHeadLimit = 250
 
 // grepSearch 用 Go 正则在 root（文件或目录）下搜索 pattern，纯标准库实现。
 // 返回结果条目、是否因 headLimit 截断、错误。会跳过 .git 目录与二进制文件。
-func grepSearch(pattern, root, globPat, outputMode string, ignoreCase, lineNumbers, multiline bool, headLimit int) ([]string, bool, error) {
+func grepSearch(ctx context.Context, pattern, root, globPat, outputMode string, ignoreCase, lineNumbers, multiline bool, headLimit int) ([]string, bool, error) {
 	// 组装正则前缀标志：忽略大小写 / 多行（dot-all，让 . 匹配换行）
 	var prefix string
 	if ignoreCase {
@@ -44,6 +45,9 @@ func grepSearch(pattern, root, globPat, outputMode string, ignoreCase, lineNumbe
 	var files []string
 	if info.IsDir() {
 		walkErr := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+			if ctx.Err() != nil {
+				return filepath.SkipAll // 被取消则尽快停止遍历
+			}
 			if err != nil {
 				return nil // 跳过无法访问的项，不中断整体扫描
 			}
@@ -89,6 +93,10 @@ func grepSearch(pattern, root, globPat, outputMode string, ignoreCase, lineNumbe
 
 outer:
 	for _, f := range files {
+		// 被取消则停止处理
+		if ctx.Err() != nil {
+			return nil, false, ctx.Err()
+		}
 		// 跳过二进制文件
 		if bin, _, berr := tools.IsBinaryFile(f); berr == nil && bin {
 			continue
@@ -147,7 +155,7 @@ func formatContentLine(file string, line int, text string, withLineNumber bool) 
 func NewGrepTool() *Tools {
 	return &Tools{
 		Name: "grep",
-		Func: func(args map[string]any) string {
+		Func: func(ctx context.Context, args map[string]any) string {
 			pattern, ok := args["pattern"].(string)
 			if !ok || pattern == "" {
 				return jsonErr(fmt.Sprintf(errors.ErrToolFunctionCall, "pattern"))
@@ -180,7 +188,7 @@ func NewGrepTool() *Tools {
 				headLimit = int(v)
 			}
 
-			results, truncated, err := grepSearch(pattern, path, globPat, outputMode, ignoreCase, lineNumbers, multiline, headLimit)
+			results, truncated, err := grepSearch(ctx, pattern, path, globPat, outputMode, ignoreCase, lineNumbers, multiline, headLimit)
 			if err != nil {
 				return jsonErr(err.Error())
 			}

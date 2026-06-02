@@ -1,6 +1,7 @@
 package agent_tools
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -139,7 +140,7 @@ func buildToolCallResp(t *testing.T, callID, name, args string) string {
 
 func TestNewSubAgentTools_MissingPrompt(t *testing.T) {
 	tool := NewSubAgentTools(nil, "")
-	out := tool.Func(map[string]any{})
+	out := tool.Func(context.Background(), map[string]any{})
 
 	var resp map[string]string
 	if err := json.Unmarshal([]byte(out), &resp); err != nil {
@@ -152,7 +153,7 @@ func TestNewSubAgentTools_MissingPrompt(t *testing.T) {
 
 func TestNewSubAgentTools_EmptyPrompt(t *testing.T) {
 	tool := NewSubAgentTools(nil, "")
-	out := tool.Func(map[string]any{"prompt": ""})
+	out := tool.Func(context.Background(), map[string]any{"prompt": ""})
 
 	var resp map[string]string
 	if err := json.Unmarshal([]byte(out), &resp); err != nil {
@@ -193,7 +194,7 @@ func TestSubAgentInfoForLLM_Schema(t *testing.T) {
 // ---------- 子工具集（防递归是核心契约） ----------
 
 func TestBuildChildTools_ExcludesTaskTool(t *testing.T) {
-	handlers := make(map[string]func(map[string]any) string)
+	handlers := make(map[string]ToolFunc)
 	tools := buildChildTools(&handlers)
 
 	// 核心契约：子 agent 绝不能拿到 task 工具，否则会无限递归派生
@@ -208,7 +209,7 @@ func TestBuildChildTools_ExcludesTaskTool(t *testing.T) {
 }
 
 func TestBuildChildTools_RegistersBaseTools(t *testing.T) {
-	handlers := make(map[string]func(map[string]any) string)
+	handlers := make(map[string]ToolFunc)
 	tools := buildChildTools(&handlers)
 
 	want := []string{"time_now", "read_file", "write_file", "Bash", "todo_list"}
@@ -237,7 +238,7 @@ func TestSubAgentRun_ReturnsSummary(t *testing.T) {
 	defer srv.Close()
 
 	runner := newSubagentTestRunner(t, srv.URL)
-	result := runner.run("分析一下代码")
+	result := runner.run(context.Background(), "分析一下代码")
 
 	if result != "这是子任务的总结" {
 		t.Fatalf("expected summary text, got: %q", result)
@@ -260,7 +261,7 @@ func TestSubAgentRun_ToolCallThenSummary(t *testing.T) {
 	defer srv.Close()
 
 	runner := newSubagentTestRunner(t, srv.URL)
-	result := runner.run("现在 UTC 几点")
+	result := runner.run(context.Background(), "现在 UTC 几点")
 
 	if result != "当前 UTC 时间已获取并总结完毕" {
 		t.Fatalf("expected final summary, got: %q", result)
@@ -284,7 +285,7 @@ func TestSubAgentRun_Non200ReturnsError(t *testing.T) {
 	defer srv.Close()
 
 	runner := newSubagentTestRunner(t, srv.URL)
-	result := runner.run("做点什么")
+	result := runner.run(context.Background(), "做点什么")
 
 	var resp map[string]string
 	if err := json.Unmarshal([]byte(result), &resp); err != nil {
@@ -303,7 +304,7 @@ func TestSubAgentRun_EmptyChoicesReturnsNoSummary(t *testing.T) {
 	defer srv.Close()
 
 	runner := newSubagentTestRunner(t, srv.URL)
-	result := runner.run("空响应测试")
+	result := runner.run(context.Background(), "空响应测试")
 
 	if result != "(no summary)" {
 		t.Fatalf("expected '(no summary)' on empty choices, got: %q", result)
@@ -320,7 +321,7 @@ func TestSubAgentRun_MaxTurnsSafetyLimit(t *testing.T) {
 	defer srv.Close()
 
 	runner := newSubagentTestRunner(t, srv.URL)
-	result := runner.run("死循环测试")
+	result := runner.run(context.Background(), "死循环测试")
 
 	if result != "(no summary)" {
 		t.Fatalf("expected '(no summary)' when max turns hit, got: %q", result)
@@ -339,7 +340,7 @@ func TestSubAgentRun_FirstResponseHasNoTools(t *testing.T) {
 	defer srv.Close()
 
 	runner := newSubagentTestRunner(t, srv.URL)
-	result := runner.run("一个简单问题")
+	result := runner.run(context.Background(), "一个简单问题")
 
 	if result != "无需工具，直接回答" {
 		t.Fatalf("got: %q", result)

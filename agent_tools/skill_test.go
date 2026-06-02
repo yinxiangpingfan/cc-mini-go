@@ -1,6 +1,7 @@
 package agent_tools
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -215,7 +216,7 @@ func TestLoadFullText_UnknownSkill(t *testing.T) {
 func TestNewLoadSkillTool_MissingName(t *testing.T) {
 	r := NewSkillRegistry()
 	tool := NewLoadSkillTool(r)
-	out := tool.Func(map[string]any{})
+	out := tool.Func(context.Background(), map[string]any{})
 
 	var resp map[string]string
 	if err := json.Unmarshal([]byte(out), &resp); err != nil {
@@ -238,7 +239,7 @@ func TestNewLoadSkillTool_LoadsBody(t *testing.T) {
 	writeSkill(t, dir, "mcp-builder", "---\nname: mcp-builder\ndescription: d\n---\nMCP build steps.")
 
 	tool := NewLoadSkillTool(NewSkillRegistry(dir))
-	out := tool.Func(map[string]any{"name": "mcp-builder"})
+	out := tool.Func(context.Background(), map[string]any{"name": "mcp-builder"})
 
 	if !strings.Contains(out, "MCP build steps.") {
 		t.Fatalf("expected skill body, got: %s", out)

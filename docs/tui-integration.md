@@ -46,14 +46,15 @@ func WithEventChannel(ch chan<- AgentEvent) AgentOption
 
 ```go
 // 非流式：一次性返回，无 token 流（仍有工具/重试事件）
-func (a *ChatCompletionAgent) Agent(messages []client.Message, system string) ([]any, error)
+func (a *ChatCompletionAgent) Agent(ctx context.Context, messages []client.Message, system string) ([]any, error)
 
 // 流式：逐 token 通过事件推送（推荐 TUI 用这个）
-func (a *ChatCompletionAgent) StreamAgent(messages []client.Message, system string) ([]any, error)
+func (a *ChatCompletionAgent) StreamAgent(ctx context.Context, messages []client.Message, system string) ([]any, error)
 ```
 
 两者都是**阻塞调用**，跑完整个「LLM↔工具」循环才返回。所以必须放在 **goroutine** 里跑（见 §3）。
 
+- `ctx`：取消它会中断进行中的 LLM 请求与可取消的工具（bash/subagent/grep/glob），并让循环尽快退出，返回 `context.Canceled`。"停止"按钮就靠它（见 §3.1）。
 - `messages`：初始消息，用 `cm.NewUserMessage("...")` 构造，例如
   `[]client.Message{*cm.NewUserMessage(userInput)}`。
 - `system`：系统提示，直接用 `prompt.SystemPrompt`。
@@ -134,11 +135,29 @@ type AgentEvent struct {
 完成信号：
 
 ```go
+ctx, cancel := context.WithCancel(context.Background())
 go func() {
-    msgs, err := a.StreamAgent(input, prompt.SystemPrompt)
-    p.Send(doneMsg{messages: msgs, err: err}) // 本轮结束，通知 UI
+    msgs, err := a.StreamAgent(ctx, input, prompt.SystemPrompt)
+    p.Send(doneMsg{messages: msgs, err: err}) // 本轮结束，通知 UI（err 可能是 context.Canceled）
 }()
 ```
+
+### 3.1 取消 / 停止按钮
+
+`Agent`/`StreamAgent` 的第一个参数是 `context.Context`。把对应的 `cancel` 存进 model，
+用户按 Ctrl+C 或点"停止"时调用它即可：
+
+```go
+case tea.KeyMsg:
+    if msg.String() == "ctrl+c" && m.running {
+        m.cancel()        // 中断进行中的 LLM 请求与可取消的工具，StreamAgent 很快返回
+        return m, nil
+    }
+```
+
+取消会让进行中的 LLM 请求、退避等待、以及可取消的工具（**bash / subagent / grep / glob**）尽快中止，
+`StreamAgent` 随即返回 `context.Canceled`（经 `doneMsg.err` 到达 UI）。
+注意：`read/write/edit` 这类瞬时工具不检查 ctx（本来就快），属正常。
 
 ---
 
@@ -158,6 +177,7 @@ type model struct {
     events   chan agent.AgentEvent
     program  *tea.Program
     agent    *agent.ChatCompletionAgent
+    cancel   context.CancelFunc // 当前轮的取消函数，停止按钮调用
 
     thinking string            // 累积 EventReasoning
     answer   string            // 累积 EventContent
@@ -174,11 +194,18 @@ func waitEvent(ch chan agent.AgentEvent) tea.Cmd {
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
     switch msg := msg.(type) {
     case tea.KeyMsg:
+        if msg.String() == "ctrl+c" && m.running {
+            m.cancel() // 停止：中断进行中的 LLM 请求与可取消的工具
+            return m, nil
+        }
         if msg.Type == tea.KeyEnter && !m.running {
             m.running = true
             input := m.takeInput() // 取输入框文字
+            ctx, cancel := context.WithCancel(context.Background())
+            m.cancel = cancel
             go func() {
                 msgs, err := m.agent.StreamAgent(
+                    ctx,
                     []client.Message{*cm.NewUserMessage(input)},
                     prompt.SystemPrompt,
                 )
@@ -225,7 +252,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 var history []client.Message // TUI 自己维护
 // 每轮：
 history = append(history, *cm.NewUserMessage(userInput))
-msgs, err := a.StreamAgent(history, prompt.SystemPrompt)
+msgs, err := a.StreamAgent(ctx, history, prompt.SystemPrompt)
 // 从事件累积的 m.answer 即本轮助手最终文本
 history = append(history, *cm.NewAssistantMessage(m.answer))
 ```
@@ -242,8 +269,7 @@ history = append(history, *cm.NewAssistantMessage(m.answer))
 
 | 限制 | 影响 | 现状 / 规避 |
 |------|------|------------|
-| **无取消机制** | Agent 跑起来后**无法中途中止**（HTTP 调用没接 `context`） | "停止"按钮目前做不到真正中断；只能等本轮结束。需要的话要给核心加 `context` 支持 |
-| **无工具审批钩子** | 工具**自动执行**，TUI 无法在执行前拦截/确认 | 只能事后用 `EventToolStart/Result` 展示，不能 gate |
+| **工具执行无审批钩子** | 工具**自动执行**，TUI 无法在执行前拦截/确认 | 只能事后用 `EventToolStart/Result` 展示，不能 gate |
 | **同名并发工具不可区分** | 并行调用同一工具时事件 `ToolName` 重名 | UI 分组会混；当前事件无唯一调用 ID |
 | **emit 满则丢弃** | 缓冲不足时高频 token 掉帧 | 用大缓冲（≥256）；最终文本仍在返回值里 |
 | **非流式无 token 流** | `Agent()` 不发 `EventContent` 的增量，只在结束发整段 | 想要逐字效果就用 `StreamAgent` |
@@ -261,7 +287,7 @@ history = append(history, *cm.NewAssistantMessage(m.answer))
 - **思考区**（可折叠/侧栏）：累积渲染 `EventReasoning`，默认折叠。
 - **工具进度区**：按 `ToolName` 一行行显示 `▶ 执行中` / `✓ 完成`（`EventToolStart/Result`）。
 - **状态行**（顶部或底部）：显示 `EventRetry`（"⟳ 重试 2/4…"）和最终错误（`doneMsg.err`）。
-- **快捷键**：Enter 发送、Ctrl+C 退出、PgUp/PgDn 滚动、Tab 切换焦点、可选 Ctrl+R 折叠思考区。
+- **快捷键**：Enter 发送、Ctrl+C 运行中=停止当前轮（调用 `cancel`）/ 空闲时=退出、PgUp/PgDn 滚动、Tab 切换焦点、可选 Ctrl+R 折叠思考区。
 
 技术选型：`github.com/charmbracelet/bubbletea` +
 `github.com/charmbracelet/lipgloss`（样式）+ `github.com/charmbracelet/bubbles`（输入框/视口组件）。

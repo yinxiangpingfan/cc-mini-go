@@ -1,6 +1,7 @@
 package agent_tools
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -12,7 +13,7 @@ import (
 // ---------- bashTool 核心逻辑 ----------
 
 func TestBashTool_BasicOutput(t *testing.T) {
-	out, err := bashTool("echo hello", "", 0, false)
+	out, err := bashTool(context.Background(), "echo hello", "", 0, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -22,7 +23,7 @@ func TestBashTool_BasicOutput(t *testing.T) {
 }
 
 func TestBashTool_NoOutput(t *testing.T) {
-	out, err := bashTool("true", "", 0, false)
+	out, err := bashTool(context.Background(), "true", "", 0, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -32,7 +33,7 @@ func TestBashTool_NoOutput(t *testing.T) {
 }
 
 func TestBashTool_StderrCaptured(t *testing.T) {
-	out, err := bashTool("echo err >&2", "", 0, false)
+	out, err := bashTool(context.Background(), "echo err >&2", "", 0, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -45,7 +46,7 @@ func TestBashTool_StderrCaptured(t *testing.T) {
 }
 
 func TestBashTool_NonZeroExitCode(t *testing.T) {
-	out, err := bashTool("exit 42", "", 0, false)
+	out, err := bashTool(context.Background(), "exit 42", "", 0, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -55,7 +56,7 @@ func TestBashTool_NonZeroExitCode(t *testing.T) {
 }
 
 func TestBashTool_StdoutAndStderr(t *testing.T) {
-	out, err := bashTool("echo out; echo err >&2", "", 0, false)
+	out, err := bashTool(context.Background(), "echo out; echo err >&2", "", 0, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -68,7 +69,7 @@ func TestBashTool_StdoutAndStderr(t *testing.T) {
 }
 
 func TestBashTool_TrailingNewlineTrimmed(t *testing.T) {
-	out, err := bashTool("printf 'line1\\nline2\\n'", "", 0, false)
+	out, err := bashTool(context.Background(), "printf 'line1\\nline2\\n'", "", 0, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -81,7 +82,7 @@ func TestBashTool_TrailingNewlineTrimmed(t *testing.T) {
 }
 
 func TestBashTool_Timeout(t *testing.T) {
-	_, err := bashTool("sleep 10", "", 200*time.Millisecond, false)
+	_, err := bashTool(context.Background(), "sleep 10", "", 200*time.Millisecond, false)
 	if err == nil {
 		t.Fatal("expected timeout error, got nil")
 	}
@@ -93,7 +94,7 @@ func TestBashTool_Timeout(t *testing.T) {
 func TestBashTool_OutputTruncated(t *testing.T) {
 	// 生成 >10000 字符的输出，用 python3 或 awk
 	cmd := `python3 -c "print('x' * 20000)"`
-	out, err := bashTool(cmd, "", 0, false)
+	out, err := bashTool(context.Background(), cmd, "", 0, false)
 	if err != nil {
 		t.Skipf("python3 not available, skipping truncation test: %v", err)
 	}
@@ -110,7 +111,7 @@ func TestBashTool_WorksInTempDir(t *testing.T) {
 	f := filepath.Join(tmp, "hello.txt")
 	os.WriteFile(f, []byte("world"), 0644)
 
-	out, err := bashTool("cat "+f, "", 0, false)
+	out, err := bashTool(context.Background(), "cat "+f, "", 0, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -120,7 +121,7 @@ func TestBashTool_WorksInTempDir(t *testing.T) {
 }
 
 func TestBashTool_MultilineOutput(t *testing.T) {
-	out, err := bashTool("printf 'a\\nb\\nc'", "", 0, false)
+	out, err := bashTool(context.Background(), "printf 'a\\nb\\nc'", "", 0, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -134,7 +135,7 @@ func TestBashTool_MultilineOutput(t *testing.T) {
 
 func TestNewBashTool_MissingCommand(t *testing.T) {
 	tool := NewBashTool()
-	result := tool.Func(map[string]interface{}{})
+	result := tool.Func(context.Background(), map[string]interface{}{})
 	var m map[string]string
 	if err := json.Unmarshal([]byte(result), &m); err != nil {
 		t.Fatalf("invalid JSON: %v, got: %s", err, result)
@@ -146,7 +147,7 @@ func TestNewBashTool_MissingCommand(t *testing.T) {
 
 func TestNewBashTool_Success(t *testing.T) {
 	tool := NewBashTool()
-	result := tool.Func(map[string]interface{}{
+	result := tool.Func(context.Background(), map[string]interface{}{
 		"command": "echo hi",
 	})
 	var m map[string]string
@@ -160,7 +161,7 @@ func TestNewBashTool_Success(t *testing.T) {
 
 func TestNewBashTool_TimeoutParam(t *testing.T) {
 	tool := NewBashTool()
-	result := tool.Func(map[string]interface{}{
+	result := tool.Func(context.Background(), map[string]interface{}{
 		"command": "sleep 10",
 		"timeout": float64(0.2), // 200ms
 	})
@@ -176,7 +177,7 @@ func TestNewBashTool_TimeoutParam(t *testing.T) {
 func TestNewBashTool_OptionalDescriptionDefaults(t *testing.T) {
 	tool := NewBashTool()
 	// description 不传，不应 panic 或报错
-	result := tool.Func(map[string]interface{}{
+	result := tool.Func(context.Background(), map[string]interface{}{
 		"command": "echo ok",
 	})
 	if !strings.Contains(result, "ok") {
@@ -187,7 +188,7 @@ func TestNewBashTool_OptionalDescriptionDefaults(t *testing.T) {
 func TestNewBashTool_OutputIsValidJSON(t *testing.T) {
 	tool := NewBashTool()
 	// 输出含特殊字符：引号、反斜杠
-	result := tool.Func(map[string]interface{}{
+	result := tool.Func(context.Background(), map[string]interface{}{
 		"command": `echo 'say "hello\nworld"'`,
 	})
 	var m map[string]interface{}

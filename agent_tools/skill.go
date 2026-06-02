@@ -1,6 +1,7 @@
 package agent_tools
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
 	"os"
@@ -227,7 +228,7 @@ var Skills = NewSkillRegistry(DefaultSkillDirs()...)
 func NewLoadSkillTool(registry *SkillRegistry) *Tools {
 	return &Tools{
 		Name: "load_skill",
-		Func: func(args map[string]any) string {
+		Func: func(ctx context.Context, args map[string]any) string {
 			name, ok := args["name"].(string)
 			if !ok || name == "" {
 				return jsonErr(fmt.Sprintf(errors.ErrToolFunctionCall, "name"))

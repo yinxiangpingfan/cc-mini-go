@@ -289,7 +289,7 @@ func TestNewCompactTool_NameAndSentinel(t *testing.T) {
 	if tool.Name != CompactToolName {
 		t.Fatalf("expected name %q, got %q", CompactToolName, tool.Name)
 	}
-	if out := tool.Func(map[string]any{}); !strings.Contains(out, "Compacting") {
+	if out := tool.Func(context.Background(), map[string]any{}); !strings.Contains(out, "Compacting") {
 		t.Fatalf("expected sentinel output, got: %q", out)
 	}
 }

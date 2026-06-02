@@ -2,6 +2,7 @@ package agent_tools
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -107,7 +108,7 @@ func readFile(filePath string, offset int, limit int) (content string, totalLine
 func NewReadFile() *Tools {
 	return &Tools{
 		Name: "read_file",
-		Func: func(args map[string]interface{}) string {
+		Func: func(ctx context.Context, args map[string]interface{}) string {
 			//从args中获取工具的参数
 			filePath, exists := args["file_path"].(string)
 			if !exists {

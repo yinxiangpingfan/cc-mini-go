@@ -16,7 +16,7 @@ func (a *ChatCompletionAgent) withSkillCatalog(system string) string {
 	return system + "\n\n" + prompt.SkillCatalogHeader + "\n" + catalog
 }
 
-func (a *ChatCompletionAgent) ToolInit(tools *map[string]func(input map[string]any) string) []client.Tool {
+func (a *ChatCompletionAgent) ToolInit(tools *map[string]tool.ToolFunc) []client.Tool {
 	timeNowTool := tool.NewTimeNowTool()
 	(*tools)[timeNowTool.Name] = timeNowTool.Func
 	readFileTool := tool.NewReadFile()

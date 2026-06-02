@@ -1,6 +1,7 @@
 package agent_tools
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -164,7 +165,7 @@ func TestNewEditFileTool_MissingArgs(t *testing.T) {
 		{"file_path": "/x", "old_string": "a", "new_string": "a"}, // old==new
 	}
 	for i, args := range cases {
-		out := tool.Func(args)
+		out := tool.Func(context.Background(), args)
 		var resp map[string]any
 		if err := json.Unmarshal([]byte(out), &resp); err != nil {
 			t.Fatalf("case %d: output not JSON: %v", i, err)
@@ -182,7 +183,7 @@ func TestNewEditFileTool_Success(t *testing.T) {
 	os.WriteFile(f, []byte("foo bar"), 0644)
 	seedRead(t, f)
 
-	out := NewEditFileTool().Func(map[string]any{
+	out := NewEditFileTool().Func(context.Background(), map[string]any{
 		"file_path":  f,
 		"old_string": "bar",
 		"new_string": "baz",
