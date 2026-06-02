@@ -1,6 +1,7 @@
 package agent_tools
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -231,7 +232,7 @@ func (t *SessionTranscript) Flush(msgs []any) error {
 func (t *SessionTranscript) Path() string { return t.path }
 
 // summarizeHistory 调一次模型，把整段对话压成一份连续性摘要。
-func summarizeHistory(call *client.Call, model string, msgs []any) (string, error) {
+func summarizeHistory(ctx context.Context, call *client.Call, model string, msgs []any) (string, error) {
 	raw, err := json.Marshal(msgs)
 	if err != nil {
 		return "", fmt.Errorf("%w: %w", errors.ErrCompactSummary, err)
@@ -241,7 +242,7 @@ func summarizeHistory(call *client.Call, model string, msgs []any) (string, erro
 		conversation = conversation[:summarizeInputLimit]
 	}
 	summaryMsgs := []any{*call.Cm.NewUserMessage(prompt.CompactSummaryPromptPrefix + conversation)}
-	res, resp, err := call.NewCallRequest(model, summaryMsgs, false, prompt.CompactSummarySystemPrompt, nil, nil)
+	res, resp, err := call.NewCallRequestCtx(ctx, model, summaryMsgs, false, prompt.CompactSummarySystemPrompt, nil, nil)
 	if err != nil {
 		return "", fmt.Errorf("%w: %w", errors.ErrCompactSummary, err)
 	}
@@ -261,8 +262,8 @@ func summarizeHistory(call *client.Call, model string, msgs []any) (string, erro
 // 把整段历史替换成单条携带摘要的 user 消息。
 // 摘要失败时返回原消息（不压缩），避免因瞬时错误抹掉上下文。
 // 注意：完整对话已由 SessionTranscript 持续落盘，这里不再单独写转录。
-func CompactHistory(call *client.Call, model string, msgs []any, state *CompactState, focus string) []any {
-	summary, err := summarizeHistory(call, model, msgs)
+func CompactHistory(ctx context.Context, call *client.Call, model string, msgs []any, state *CompactState, focus string) []any {
+	summary, err := summarizeHistory(ctx, call, model, msgs)
 	if err != nil {
 		return msgs // 压缩失败：保住连续性，留待下一轮重试
 	}

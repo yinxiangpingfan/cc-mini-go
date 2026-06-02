@@ -1,6 +1,7 @@
 package agent_tools
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -321,7 +322,7 @@ func TestCompactHistory_ReplacesWithSummary(t *testing.T) {
 		toolMsg("t1", "一些工具结果"),
 	}
 	state := NewCompactState()
-	out := CompactHistory(call, "test-model", msgs, state, "")
+	out := CompactHistory(context.Background(), call, "test-model", msgs, state, "")
 
 	if len(out) != 1 {
 		t.Fatalf("compaction should collapse history to a single message, got %d", len(out))
@@ -347,7 +348,7 @@ func TestCompactHistory_AppendsFocus(t *testing.T) {
 
 	call := newCompactTestCall(t, srv.URL)
 	msgs := []any{client.Message{Role: "user", Content: "x"}}
-	out := CompactHistory(call, "test-model", msgs, NewCompactState(), "记住要保留登录流程")
+	out := CompactHistory(context.Background(), call, "test-model", msgs, NewCompactState(), "记住要保留登录流程")
 
 	content := out[0].(client.Message).Content.(string)
 	if !strings.Contains(content, "记住要保留登录流程") {
@@ -367,7 +368,7 @@ func TestCompactHistory_FailureKeepsOriginal(t *testing.T) {
 		client.Message{Role: "user", Content: "a"},
 		client.Message{Role: "assistant", Content: "b"},
 	}
-	out := CompactHistory(call, "test-model", msgs, NewCompactState(), "")
+	out := CompactHistory(context.Background(), call, "test-model", msgs, NewCompactState(), "")
 
 	if len(out) != len(msgs) {
 		t.Fatalf("on summary failure the original messages must be kept, got %d want %d", len(out), len(msgs))

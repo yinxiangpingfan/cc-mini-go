@@ -1,8 +1,8 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
-	"fmt"
 	"sync"
 
 	"github.com/yinxiangpingfan/cc-mini-go/agent_tools"
@@ -12,19 +12,24 @@ import (
 )
 
 type ChatCompletionAgent struct {
-	cf   *config.Config
-	call *client.Call
+	cf     *config.Config
+	call   *client.Call
+	events chan<- AgentEvent // 可选：向外广播进度事件（如重试），nil 表示不广播
 }
 
-func NewChatCompletionAgent(cf *config.Config, call *client.Call) *ChatCompletionAgent {
-	return &ChatCompletionAgent{
+func NewChatCompletionAgent(cf *config.Config, call *client.Call, opts ...AgentOption) *ChatCompletionAgent {
+	a := &ChatCompletionAgent{
 		cf:   cf,
 		call: call,
 	}
+	for _, opt := range opts {
+		opt(a)
+	}
+	return a
 }
 
-// 非流式对话请求
-func (a *ChatCompletionAgent) Agent(messages []client.Message, system string) ([]any, error) {
+// 非流式对话请求。ctx 取消会中断进行中的 LLM 请求并尽快退出循环。
+func (a *ChatCompletionAgent) Agent(ctx context.Context, messages []client.Message, system string) ([]any, error) {
 	//定义信息
 	allMsg := make([]any, 0, len(messages))
 	for _, m := range messages {
@@ -42,14 +47,18 @@ func (a *ChatCompletionAgent) Agent(messages []client.Message, system string) ([
 	//任意返回路径都把最后的消息补写入转录
 	defer func() { _ = transcript.Flush(allMsg) }()
 
-	//开始请求LLM
-	for {
+	//开始请求LLM（带最大轮次保护，防止工具调用无限循环）
+	for turn := 0; turn < agentMaxTurns; turn++ {
+		// 每轮开始检查取消，尽快退出
+		if err := ctx.Err(); err != nil {
+			return allMsg, err
+		}
 		// 持续把本轮之前新增的消息落盘（压缩前先写，保住完整历史）
 		_ = transcript.Flush(allMsg)
 		// 上下文压缩：先微压缩旧工具结果，再判断整体是否过大需要完整压缩
 		allMsg = agent_tools.MicroCompact(allMsg)
 		if agent_tools.EstimateContextSize(allMsg) > agent_tools.ContextLimit {
-			allMsg = agent_tools.CompactHistory(a.call, a.cf.Model, allMsg, compactState, "")
+			allMsg = agent_tools.CompactHistory(ctx, a.call, a.cf.Model, allMsg, compactState, "")
 		}
 
 		// 本轮计数 +1（计划已多少轮未更新）
@@ -68,14 +77,10 @@ func (a *ChatCompletionAgent) Agent(messages []client.Message, system string) ([
 			allMsg = append(allMsg, reminder)
 		}
 
-		res, resp, err := a.call.NewCallRequest(a.cf.Model, allMsg, false, system, clientTool, nil)
+		// LLM 调用：自动重试网络错误与限流/5xx，不可重试错误直接返回
+		res, err := a.callWithRetry(ctx, allMsg, system, clientTool)
 		if err != nil {
-			//TODO:处理错误
 			return allMsg, err
-		}
-		if resp.StatusCode != 200 {
-			//TODO:处理错误
-			return allMsg, fmt.Errorf(errors.ErrHTTPStatusCode, resp.StatusCode)
 		}
 		if len(res.Choices) == 0 {
 			return allMsg, nil
@@ -83,6 +88,7 @@ func (a *ChatCompletionAgent) Agent(messages []client.Message, system string) ([
 		//处理LLM返回的信息
 		if res.Choices[0].Message.Refusal != "" {
 			//大模型拒绝回答
+			a.emit(AgentEvent{Type: EventContent, Text: res.Choices[0].Message.Refusal})
 			allMsg = append(allMsg, *a.call.Cm.NewAssistantMessage(res.Choices[0].Message.Refusal))
 			return allMsg, nil
 		}
@@ -90,6 +96,10 @@ func (a *ChatCompletionAgent) Agent(messages []client.Message, system string) ([
 		if len(res.Choices[0].Message.ToolCalls) > 0 {
 			//追加工具请求信息
 			allMsg = append(allMsg, *a.call.Cm.NewToolsCall(res.Choices[0].Message.Content, res.Choices[0].Message.ToolCalls))
+			//助手在调用工具的同时可能带文本，一并广播
+			if s, ok := res.Choices[0].Message.Content.(string); ok && s != "" {
+				a.emit(AgentEvent{Type: EventContent, Text: s})
+			}
 			//检测本轮是否请求手动压缩
 			manualCompact, compactFocus := agent_tools.DetectManualCompact(res.Choices[0].Message.ToolCalls)
 			var wg sync.WaitGroup
@@ -99,10 +109,12 @@ func (a *ChatCompletionAgent) Agent(messages []client.Message, system string) ([
 					wg.Add(1)
 					go func() {
 						defer wg.Done()
+						a.emit(AgentEvent{Type: EventToolStart, ToolName: v.Function.Name, ToolArgs: v.Function.Arguments})
 						var args map[string]any
 						json.Unmarshal([]byte(v.Function.Arguments), &args)
-						//大结果落盘，只在上下文留预览
-						res := agent_tools.PersistLargeOutput(v.Id, f(args))
+						//大结果落盘，只在上下文留预览；safeToolCall 捕获工具 panic 避免崩溃
+						res := agent_tools.PersistLargeOutput(v.Id, safeToolCall(v.Function.Name, f, args))
+						a.emit(AgentEvent{Type: EventToolResult, ToolName: v.Function.Name, Text: res})
 						mu.Lock()
 						//追加工具返回信息
 						allMsg = append(allMsg, *a.call.Cm.NewToolsMessage(v.Id, res))
@@ -114,14 +126,17 @@ func (a *ChatCompletionAgent) Agent(messages []client.Message, system string) ([
 			//手动压缩与自动压缩复用同一条机制（压缩前先把本轮消息落盘）
 			if manualCompact {
 				_ = transcript.Flush(allMsg)
-				allMsg = agent_tools.CompactHistory(a.call, a.cf.Model, allMsg, compactState, compactFocus)
+				allMsg = agent_tools.CompactHistory(ctx, a.call, a.cf.Model, allMsg, compactState, compactFocus)
 			}
 		} else {
 			//没有工具调用，返回结果
 			if s, ok := res.Choices[0].Message.Content.(string); ok && s != "" {
+				a.emit(AgentEvent{Type: EventContent, Text: s})
 				allMsg = append(allMsg, *a.call.Cm.NewAssistantMessage(s))
 			}
 			return allMsg, nil
 		}
 	}
+	//超过最大轮次仍未收敛，返回错误兜底
+	return allMsg, errors.ErrAgentMaxTurns
 }

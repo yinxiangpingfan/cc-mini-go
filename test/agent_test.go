@@ -1,6 +1,7 @@
 package test
 
 import (
+	"context"
 	"testing"
 
 	"github.com/yinxiangpingfan/cc-mini-go/agent"
@@ -23,7 +24,7 @@ func TestAgent(t *testing.T) {
 	cm := client.NewChatCompletionMessage()
 	call := client.NewCall(cl, cm, log)
 	a := agent.NewChatCompletionAgent(&cf, call)
-	res, err := a.Agent([]client.Message{
+	res, err := a.Agent(context.Background(), []client.Message{
 		*cm.NewUserMessage("你好，现在东京几点啊，并且在/Users/easyimpr/Desktop/cc-mini-go/test/data目录下创建一个test.txt文件，内容为test"),
 	}, prompt.SystemPrompt)
 	if err != nil {
@@ -47,7 +48,7 @@ func TestAgentStream(t *testing.T) {
 	cm := client.NewChatCompletionMessage()
 	call := client.NewCall(cl, cm, log)
 	a := agent.NewChatCompletionAgent(&cf, call)
-	res, err := a.StreamAgent([]client.Message{
+	res, err := a.StreamAgent(context.Background(), []client.Message{
 		*cm.NewUserMessage("使用code-review skill来审一下代码"),
 	}, prompt.SystemPrompt)
 	if err != nil {

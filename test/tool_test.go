@@ -1,6 +1,7 @@
 package test
 
 import (
+	"context"
 	"testing"
 
 	"github.com/yinxiangpingfan/cc-mini-go/agent"
@@ -23,7 +24,7 @@ func TestToolStream(t *testing.T) {
 	cm := client.NewChatCompletionMessage()
 	call := client.NewCall(cl, cm, log)
 	a := agent.NewChatCompletionAgent(&cf, call)
-	res, err := a.StreamAgent([]client.Message{
+	res, err := a.StreamAgent(context.Background(), []client.Message{
 		*cm.NewUserMessage("查看/Users/easyimpr/Desktop/cc-mini-go/test/data目录下的文件列表"),
 	}, prompt.SystemPrompt)
 	if err != nil {

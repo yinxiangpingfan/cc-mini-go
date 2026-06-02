@@ -1,18 +1,19 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"strings"
 	"sync"
 
 	"github.com/yinxiangpingfan/cc-mini-go/agent_tools"
 	"github.com/yinxiangpingfan/cc-mini-go/client"
+	"github.com/yinxiangpingfan/cc-mini-go/errors"
 )
 
-func (a *ChatCompletionAgent) StreamAgent(messages []client.Message, system string) ([]any, error) {
+// StreamAgent 流式对话请求。ctx 取消会中断进行中的流式 LLM 请求并尽快退出循环。
+func (a *ChatCompletionAgent) StreamAgent(ctx context.Context, messages []client.Message, system string) ([]any, error) {
 	//定义信息
 	allMsg := make([]any, 0, len(messages))
 	for _, m := range messages {
@@ -33,26 +34,25 @@ func (a *ChatCompletionAgent) StreamAgent(messages []client.Message, system stri
 	//定义回调函数
 	activeToolCalls := make(map[int]*client.StreamToolCall) // 当前存在的 ToolCalls
 	var contentBuilder strings.Builder                      // 累积本轮 assistant 的 content
-	cur := false
-	cur1 := false
 	onMessage := func(sr client.StreamResponse) {
 		if len(sr.Choices) == 0 {
 			return
 		}
-		if sr.Choices[0].Delta.ReasoningContent != "" {
-			if cur == false {
-				fmt.Println("思考")
-				cur = true
+		if rc := sr.Choices[0].Delta.ReasoningContent; rc != "" {
+			// 接了事件 channel 走 TUI，否则保持原有 stdout 打印
+			if a.events != nil {
+				a.emit(AgentEvent{Type: EventReasoning, Text: rc})
+			} else {
+				fmt.Print(rc)
 			}
-			fmt.Print(sr.Choices[0].Delta.ReasoningContent)
 		}
-		if sr.Choices[0].Delta.Content != "" {
-			if cur1 == false {
-				fmt.Println("\n对话")
-				cur1 = true
+		if c := sr.Choices[0].Delta.Content; c != "" {
+			contentBuilder.WriteString(c) // 累积始终进行，最终文本权威来源
+			if a.events != nil {
+				a.emit(AgentEvent{Type: EventContent, Text: c})
+			} else {
+				fmt.Print(c)
 			}
-			fmt.Print(sr.Choices[0].Delta.Content)
-			contentBuilder.WriteString(sr.Choices[0].Delta.Content)
 		}
 		if len(sr.Choices[0].Delta.ToolCalls) > 0 {
 			for _, tc := range sr.Choices[0].Delta.ToolCalls {
@@ -92,18 +92,26 @@ func (a *ChatCompletionAgent) StreamAgent(messages []client.Message, system stri
 			}
 		}
 	}
-	//开始请求LLM
-	for {
-		//每轮开始前重置累积器
+	// reset 清空本轮累积器，供每轮开始与流式重试前复用
+	reset := func() {
 		contentBuilder.Reset()
 		activeToolCalls = make(map[int]*client.StreamToolCall)
+	}
+	//开始请求LLM（带最大轮次保护，防止工具调用无限循环）
+	for turn := 0; turn < agentMaxTurns; turn++ {
+		// 每轮开始检查取消，尽快退出
+		if err := ctx.Err(); err != nil {
+			return allMsg, err
+		}
+		//每轮开始前重置累积器
+		reset()
 
 		// 持续把本轮之前新增的消息落盘（压缩前先写，保住完整历史）
 		_ = transcript.Flush(allMsg)
 		// 上下文压缩：先微压缩旧工具结果，再判断整体是否过大需要完整压缩
 		allMsg = agent_tools.MicroCompact(allMsg)
 		if agent_tools.EstimateContextSize(allMsg) > agent_tools.ContextLimit {
-			allMsg = agent_tools.CompactHistory(a.call, a.cf.Model, allMsg, compactState, "")
+			allMsg = agent_tools.CompactHistory(ctx, a.call, a.cf.Model, allMsg, compactState, "")
 		}
 
 		// 本轮计数 +1（计划已多少轮未更新）
@@ -122,8 +130,8 @@ func (a *ChatCompletionAgent) StreamAgent(messages []client.Message, system stri
 			allMsg = append(allMsg, reminder)
 		}
 
-		_, _, err := a.call.NewCallRequest(a.cf.Model, allMsg, true, system, clientTool, onMessage)
-		if err != nil && !errors.Is(err, io.EOF) {
+		// 流式 LLM 调用：自动重试限流/5xx 与未建连的网络错误
+		if err := a.streamWithRetry(ctx, allMsg, system, clientTool, reset, onMessage); err != nil {
 			return allMsg, err
 		}
 		// 构造本轮工具调用列表
@@ -179,12 +187,19 @@ func (a *ChatCompletionAgent) StreamAgent(messages []client.Message, system stri
 				wg.Add(1)
 				go func(v *client.StreamToolCall) {
 					defer wg.Done()
-					var args map[string]any
+					name := *v.Function.Name
+					rawArgs := ""
 					if v.Function.Arguments != nil {
-						json.Unmarshal([]byte(*v.Function.Arguments), &args)
+						rawArgs = *v.Function.Arguments
 					}
-					//大结果落盘，只在上下文留预览
-					res := agent_tools.PersistLargeOutput(*v.Id, f(args))
+					a.emit(AgentEvent{Type: EventToolStart, ToolName: name, ToolArgs: rawArgs})
+					var args map[string]any
+					if rawArgs != "" {
+						json.Unmarshal([]byte(rawArgs), &args)
+					}
+					//大结果落盘，只在上下文留预览；safeToolCall 捕获工具 panic 避免崩溃
+					res := agent_tools.PersistLargeOutput(*v.Id, safeToolCall(name, f, args))
+					a.emit(AgentEvent{Type: EventToolResult, ToolName: name, Text: res})
 					mu.Lock()
 					//追加工具返回信息
 					allMsg = append(allMsg, *a.call.Cm.NewToolsMessage(*v.Id, res))
@@ -196,7 +211,9 @@ func (a *ChatCompletionAgent) StreamAgent(messages []client.Message, system stri
 		//手动压缩与自动压缩复用同一条机制（压缩前先把本轮消息落盘）
 		if manualCompact {
 			_ = transcript.Flush(allMsg)
-			allMsg = agent_tools.CompactHistory(a.call, a.cf.Model, allMsg, compactState, compactFocus)
+			allMsg = agent_tools.CompactHistory(ctx, a.call, a.cf.Model, allMsg, compactState, compactFocus)
 		}
 	}
+	//超过最大轮次仍未收敛，返回错误兜底
+	return allMsg, errors.ErrAgentMaxTurns
 }

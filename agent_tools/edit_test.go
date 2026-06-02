@@ -157,10 +157,10 @@ func TestEditFile_UpdatesHashAllowsSecondEdit(t *testing.T) {
 func TestNewEditFileTool_MissingArgs(t *testing.T) {
 	tool := NewEditFileTool()
 	cases := []map[string]any{
-		{},                                                  // 缺 file_path
-		{"file_path": "/x"},                                 // 缺 old_string
-		{"file_path": "/x", "old_string": ""},               // old_string 为空
-		{"file_path": "/x", "old_string": "a"},              // 缺 new_string
+		{},                                     // 缺 file_path
+		{"file_path": "/x"},                    // 缺 old_string
+		{"file_path": "/x", "old_string": ""},  // old_string 为空
+		{"file_path": "/x", "old_string": "a"}, // 缺 new_string
 		{"file_path": "/x", "old_string": "a", "new_string": "a"}, // old==new
 	}
 	for i, args := range cases {
