@@ -1,11 +1,50 @@
 package agent_tools
 
 import (
+	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// TestReadTool_FloatOffsetLimit 回归测试：LLM 传来的 offset/limit 经 JSON 解码是 float64，
+// 工具必须正确采纳而非回退默认值（曾因 args["offset"].(int) 断言失败导致参数被忽略）。
+func TestReadTool_FloatOffsetLimit(t *testing.T) {
+	tmp := t.TempDir()
+	f := filepath.Join(tmp, "lines.txt")
+	if err := os.WriteFile(f, []byte("a\nb\nc\nd\ne\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 模拟真实调用：参数是 float64（json 解码后的数字类型）
+	out := NewReadFile().Func(context.Background(), map[string]any{
+		"file_path": f,
+		"offset":    float64(2),
+		"limit":     float64(2),
+	})
+
+	var res response
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatalf("output not JSON: %v, raw: %s", err, out)
+	}
+	if res.StartLine != 2 {
+		t.Fatalf("offset=2 should start at line 2, got %d (float64 arg ignored?)", res.StartLine)
+	}
+	if res.EndLine != 3 {
+		t.Fatalf("offset=2 limit=2 should end at line 3, got %d", res.EndLine)
+	}
+	if !strings.Contains(res.Content, "2 | b") || !strings.Contains(res.Content, "3 | c") {
+		t.Fatalf("expected lines 2-3 (b,c), got: %s", res.Content)
+	}
+	if strings.Contains(res.Content, "1 | a") || strings.Contains(res.Content, "4 | d") {
+		t.Fatalf("offset/limit not respected, leaked out-of-range lines: %s", res.Content)
+	}
+	if !res.Truncated {
+		t.Fatalf("limit=2 over 5 lines should mark truncated, got false")
+	}
+}
 
 func TestReadFile_NormalFile(t *testing.T) {
 	// 创建临时文件

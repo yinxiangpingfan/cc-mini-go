@@ -114,19 +114,15 @@ func NewReadFile() *Tools {
 			if !exists {
 				return jsonErr(fmt.Sprintf(errors.ErrToolFunctionCall, "file_path"))
 			}
-			offset, exists := args["offset"].(int)
-			if !exists {
-				offset = 1
+			// JSON 数字经 map[string]any 解码后是 float64，不能直接断言成 int，
+			// 否则 LLM 传的 offset/limit 会被忽略、永远用默认值。
+			offset := 1
+			if v, ok := asInt(args["offset"]); ok && v >= 1 {
+				offset = v
 			}
-			if offset < 1 {
-				offset = 1
-			}
-			limit, exists := args["limit"].(int)
-			if !exists {
-				limit = 2000
-			}
-			if limit < 1 {
-				limit = 2000
+			limit := 2000
+			if v, ok := asInt(args["limit"]); ok && v >= 1 {
+				limit = v
 			}
 			res := response{}
 			var err error

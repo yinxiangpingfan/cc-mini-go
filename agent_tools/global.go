@@ -28,6 +28,22 @@ func jsonErr(msg string) string {
 	return string(b)
 }
 
+// asInt 把工具参数里的数字安全转成 int。LLM 参数经 json.Unmarshal 进 map[string]any 后，
+// 数字默认是 float64；这里同时兼容 float64 / json.Number / int，避免各工具各写一遍断言。
+func asInt(v any) (int, bool) {
+	switch n := v.(type) {
+	case float64:
+		return int(n), true
+	case int:
+		return n, true
+	case json.Number:
+		if i, err := n.Int64(); err == nil {
+			return int(i), true
+		}
+	}
+	return 0, false
+}
+
 var ToDoList PlanningState = PlanningState{
 	Items:             []PlanItem{},
 	RoundsSinceUpdate: 0,
