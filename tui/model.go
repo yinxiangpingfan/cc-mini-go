@@ -2,7 +2,8 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"math/rand/v2"
+	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
@@ -18,10 +19,39 @@ import (
 // inputHeight 输入框固定行数。
 const inputHeight = 3
 
-// turn 是一轮已完成的对话（用于渲染）。
-type turn struct {
-	role string // "user" / "agent"
-	text string
+// entryKind 是 transcript 里一条记录的类型。
+type entryKind int
+
+const (
+	entryUser entryKind = iota
+	entryAssistant
+	entryThinking
+	entryTool
+	entryTiming
+	entryError
+)
+
+// entry 是 transcript 里追加式的一条记录（不就地销毁，整轮结束后仍保留）。
+type entry struct {
+	kind     entryKind
+	text     string // user/assistant/thinking 文本；tool 的结果预览；timing/error 文案
+	toolName string
+	toolArgs string
+	toolDone bool
+}
+
+// workWord 是「工作中」的拟人化措辞（致敬 Claude Code 的 Brewing/Sautéing…）。
+var workWords = []struct{ ing, ed string }{
+	{"Brewing", "Brewed"},
+	{"Simmering", "Simmered"},
+	{"Sautéing", "Sautéed"},
+	{"Percolating", "Percolated"},
+	{"Conjuring", "Conjured"},
+	{"Noodling", "Noodled"},
+	{"Marinating", "Marinated"},
+	{"Whisking", "Whisked"},
+	{"Pondering", "Pondered"},
+	{"Tinkering", "Tinkered"},
 }
 
 // doneMsg 一轮 agent 运行结束（含被取消）后投递给 UI。
@@ -35,7 +65,7 @@ type model struct {
 	agent   *agent.ChatCompletionAgent
 	cm      *client.ChatCompletionMessage
 	events  chan agent.AgentEvent
-	model   string // 模型名，仅用于标题展示
+	model   string
 
 	input    textarea.Model
 	viewport viewport.Model
@@ -44,58 +74,61 @@ type model struct {
 	width, height int
 	ready         bool
 
-	history   []client.Message  // 多轮：只回传纯文本 user/assistant（见 docs §5）
-	turns     []turn            // 已完成轮次
-	answer    string            // 当前流式累积的助手文本
-	thinking  string            // 当前流式累积的思考
-	tools     map[string]string // toolName -> 渲染好的状态行
-	toolOrder []string          // 工具出现顺序，稳定渲染
+	history []client.Message // 多轮：纯文本 user/assistant 历史
+	entries []entry          // 追加式 transcript
+
+	// 流式过程中定位「当前正在写的块」，-1 表示需要新开一块
+	curAsstIdx  int
+	curThinkIdx int
+	toolIdx     map[string]int // toolName -> entries 下标（同名并发会复用，属已知限制）
+
+	turnAnswer string // 本轮 assistant 全部文本，用于提交进 history
 
 	running   bool
 	cancel    context.CancelFunc
-	status    string // 重试 / 错误状态行
-	showThink bool   // 是否展开思考面板
+	startTime time.Time
+	workWord  int    // 本轮选用的 workWords 下标
+	retry     string // 当前重试提示；任何进展事件都会清空（修复粘住 bug）
+
+	showThink bool // 是否展开思考块
 }
 
 func newModel(ag *agent.ChatCompletionAgent, cm *client.ChatCompletionMessage, events chan agent.AgentEvent, modelName string) *model {
 	ta := textarea.New()
-	ta.Placeholder = "输入消息，Enter 发送，Ctrl+J 换行…"
+	ta.Placeholder = "问点什么…（Enter 发送，Ctrl+J 换行）"
 	ta.ShowLineNumbers = false
-	ta.Prompt = "┃ "
+	ta.Prompt = "› "
 	ta.CharLimit = 0
 	ta.SetHeight(inputHeight)
-	// Enter 留给「发送」（在 handleKey 拦截），换行改绑 Ctrl+J。
 	ta.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("ctrl+j"))
 	ta.Focus()
 
 	sp := spinner.New()
-	sp.Spinner = spinner.Dot
+	sp.Spinner = spinner.Points
 
 	return &model{
-		agent:     ag,
-		cm:        cm,
-		events:    events,
-		model:     modelName,
-		input:     ta,
-		spinner:   sp,
-		tools:     make(map[string]string),
-		showThink: false,
+		agent:       ag,
+		cm:          cm,
+		events:      events,
+		model:       modelName,
+		input:       ta,
+		spinner:     sp,
+		curAsstIdx:  -1,
+		curThinkIdx: -1,
+		toolIdx:     make(map[string]int),
 	}
 }
 
 func (m *model) Init() tea.Cmd {
-	// 一次性启动事件监听器（全程仅保留一个，避免并发消费打乱顺序）。
 	return tea.Batch(textarea.Blink, m.spinner.Tick, m.waitEvent())
 }
 
-// waitEvent 把事件 channel 桥成 tea.Msg。每收到一个事件，Update 里再发一次，形成单一监听循环。
+// waitEvent 把事件 channel 桥成 tea.Msg；全程仅保留一个监听者，保证事件顺序。
 func (m *model) waitEvent() tea.Cmd {
 	return func() tea.Msg { return <-m.events }
 }
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmds []tea.Cmd
-
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.resize(msg.Width, msg.Height)
@@ -107,7 +140,6 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case agent.AgentEvent:
 		m.applyEvent(msg)
 		m.refreshViewport()
-		// 关键：再次监听下一个事件。
 		return m, m.waitEvent()
 
 	case doneMsg:
@@ -118,25 +150,26 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
+		if m.running {
+			m.refreshViewport() // 让底部计时 / spinner 持续刷新
+		}
 		return m, cmd
 	}
 
-	// 其余消息交给输入框（光标闪烁等）。
 	if !m.running {
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
-		cmds = append(cmds, cmd)
+		return m, cmd
 	}
-	return m, tea.Batch(cmds...)
+	return m, nil
 }
 
 func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
 		if m.running {
-			// 停止当前轮：中断进行中的 LLM 请求与可取消工具（StreamAgent 很快返回 context.Canceled）。
 			if m.cancel != nil {
-				m.cancel()
+				m.cancel() // 停止当前轮：中断 LLM 与可取消工具
 			}
 			return m, nil
 		}
@@ -161,7 +194,6 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// 其它按键（含 Ctrl+J 换行）交给输入框，运行中禁用输入。
 	if !m.running {
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
@@ -178,21 +210,22 @@ func (m *model) send() (tea.Model, tea.Cmd) {
 	}
 	m.input.Reset()
 
-	// 记录用户轮次并加入回传历史。
-	m.turns = append(m.turns, turn{role: "user", text: text})
+	m.entries = append(m.entries, entry{kind: entryUser, text: text})
 	m.history = append(m.history, *m.cm.NewUserMessage(text))
 
-	// 清空本轮实时态。
-	m.answer = ""
-	m.thinking = ""
-	m.tools = make(map[string]string)
-	m.toolOrder = nil
-	m.status = ""
+	// 重置本轮流式定位与状态
+	m.turnAnswer = ""
+	m.curAsstIdx = -1
+	m.curThinkIdx = -1
+	m.toolIdx = make(map[string]int)
+	m.retry = ""
 	m.running = true
+	m.startTime = time.Now()
+	m.workWord = rand.IntN(len(workWords))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
-	history := append([]client.Message(nil), m.history...) // 拷贝快照，避免与后续轮共享底层数组
+	history := append([]client.Message(nil), m.history...)
 
 	go func() {
 		msgs, err := m.agent.StreamAgent(ctx, history, prompt.SystemPrompt)
@@ -200,64 +233,73 @@ func (m *model) send() (tea.Model, tea.Cmd) {
 	}()
 
 	m.refreshViewport()
-	// 不重新启动 spinner：tick 循环自 Init 起已自持（见 spinner.TickMsg 分支）。
 	return m, nil
 }
 
-// applyEvent 把一个 agent 事件并入 UI 状态。
+// applyEvent 把一个 agent 事件并入 transcript。
 func (m *model) applyEvent(ev agent.AgentEvent) {
 	switch ev.Type {
 	case agent.EventReasoning:
-		m.thinking += ev.Text
+		m.retry = ""
+		m.curAsstIdx = -1 // 思考与正文分块
+		if m.curThinkIdx < 0 {
+			m.entries = append(m.entries, entry{kind: entryThinking, text: ev.Text})
+			m.curThinkIdx = len(m.entries) - 1
+		} else {
+			m.entries[m.curThinkIdx].text += ev.Text
+		}
+
 	case agent.EventContent:
-		m.answer += ev.Text
+		m.retry = ""
+		m.curThinkIdx = -1
+		m.turnAnswer += ev.Text
+		if m.curAsstIdx < 0 {
+			m.entries = append(m.entries, entry{kind: entryAssistant, text: ev.Text})
+			m.curAsstIdx = len(m.entries) - 1
+		} else {
+			m.entries[m.curAsstIdx].text += ev.Text
+		}
+
 	case agent.EventToolStart:
-		if _, seen := m.tools[ev.ToolName]; !seen {
-			m.toolOrder = append(m.toolOrder, ev.ToolName)
-		}
-		m.tools[ev.ToolName] = toolRunningStyle.Render("▶ "+ev.ToolName) + helpStyle.Render(" "+truncate(ev.ToolArgs, 60))
+		m.retry = ""
+		m.curAsstIdx = -1 // 工具后若再有正文，另起一块
+		m.curThinkIdx = -1
+		m.entries = append(m.entries, entry{kind: entryTool, toolName: ev.ToolName, toolArgs: ev.ToolArgs})
+		m.toolIdx[ev.ToolName] = len(m.entries) - 1
+
 	case agent.EventToolResult:
-		if _, seen := m.tools[ev.ToolName]; !seen {
-			m.toolOrder = append(m.toolOrder, ev.ToolName)
+		m.retry = ""
+		if idx, ok := m.toolIdx[ev.ToolName]; ok && idx < len(m.entries) {
+			m.entries[idx].toolDone = true
+			m.entries[idx].text = toolResultPreview(ev.Text)
 		}
-		m.tools[ev.ToolName] = toolDoneStyle.Render("✓ " + ev.ToolName)
+
 	case agent.EventRetry:
-		m.status = retryStyle.Render(fmt.Sprintf("⟳ 重试 %d/%d，%.1fs 后（%v）",
-			ev.Attempt, ev.Max, ev.Delay.Seconds(), ev.Err))
+		// 只更新「当前工作行」，不固化成永久条目；下一个进展事件会清掉它
+		m.retry = retryLine(ev)
 	}
 }
 
-// finishTurn 收尾一轮：把助手文本固化进 turns 与回传历史。
+// finishTurn 收尾一轮：提交历史、追加计时/错误条目、清状态。
 func (m *model) finishTurn(msg doneMsg) {
 	m.running = false
 	m.cancel = nil
+	m.retry = ""
+	elapsed := int(time.Since(m.startTime).Seconds())
 
-	if msg.err != nil {
-		if m.answer != "" {
-			m.turns = append(m.turns, turn{role: "agent", text: m.answer})
-			m.history = append(m.history, *m.cm.NewAssistantMessage(m.answer))
-		}
-		m.status = errStyle.Render("❌ " + msg.err.Error())
-		m.answer = ""
-		return
+	if m.turnAnswer != "" {
+		m.history = append(m.history, *m.cm.NewAssistantMessage(m.turnAnswer))
 	}
 
-	if m.answer != "" {
-		m.turns = append(m.turns, turn{role: "agent", text: m.answer})
-		m.history = append(m.history, *m.cm.NewAssistantMessage(m.answer))
+	switch {
+	case msg.err != nil && isCanceled(msg.err):
+		m.entries = append(m.entries, entry{kind: entryError, text: "已中断"})
+	case msg.err != nil:
+		m.entries = append(m.entries, entry{kind: entryError, text: msg.err.Error()})
+	default:
+		m.entries = append(m.entries, entry{
+			kind: entryTiming,
+			text: workWords[m.workWord].ed + " for " + secs(elapsed),
+		})
 	}
-	m.answer = ""
-	m.status = ""
-}
-
-// truncate 截断过长字符串，避免工具参数撑爆一行。
-func truncate(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	if n <= 1 {
-		return string(r[:n])
-	}
-	return string(r[:n-1]) + "…"
 }
