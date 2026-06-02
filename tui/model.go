@@ -74,15 +74,13 @@ type model struct {
 	width, height int
 	ready         bool
 
-	history []client.Message // 多轮：纯文本 user/assistant 历史
-	entries []entry          // 追加式 transcript
+	history []any   // 多轮：完整异构历史（含工具往返），进出同型闭环回传
+	entries []entry // 追加式 transcript
 
 	// 流式过程中定位「当前正在写的块」，-1 表示需要新开一块
 	curAsstIdx  int
 	curThinkIdx int
 	toolIdx     map[string]int // toolName -> entries 下标（同名并发会复用，属已知限制）
-
-	turnAnswer string // 本轮 assistant 全部文本，用于提交进 history
 
 	running   bool
 	cancel    context.CancelFunc
@@ -214,7 +212,6 @@ func (m *model) send() (tea.Model, tea.Cmd) {
 	m.history = append(m.history, *m.cm.NewUserMessage(text))
 
 	// 重置本轮流式定位与状态
-	m.turnAnswer = ""
 	m.curAsstIdx = -1
 	m.curThinkIdx = -1
 	m.toolIdx = make(map[string]int)
@@ -225,7 +222,7 @@ func (m *model) send() (tea.Model, tea.Cmd) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
-	history := append([]client.Message(nil), m.history...)
+	history := append([]any(nil), m.history...)
 
 	go func() {
 		msgs, err := m.agent.StreamAgent(ctx, history, prompt.SystemPrompt)
@@ -252,7 +249,6 @@ func (m *model) applyEvent(ev agent.AgentEvent) {
 	case agent.EventContent:
 		m.retry = ""
 		m.curThinkIdx = -1
-		m.turnAnswer += ev.Text
 		if m.curAsstIdx < 0 {
 			m.entries = append(m.entries, entry{kind: entryAssistant, text: ev.Text})
 			m.curAsstIdx = len(m.entries) - 1
@@ -287,8 +283,10 @@ func (m *model) finishTurn(msg doneMsg) {
 	m.retry = ""
 	elapsed := int(time.Since(m.startTime).Seconds())
 
-	if m.turnAnswer != "" {
-		m.history = append(m.history, *m.cm.NewAssistantMessage(m.turnAnswer))
+	// 完整历史闭环：用 agent 返回的 []any 覆盖本地历史，工具往返也随之跨轮保留。
+	// 取消/出错时返回的是中断点之前的完整历史，同样直接采纳（工具往返已配对，协议安全）。
+	if len(msg.messages) > 0 {
+		m.history = msg.messages
 	}
 
 	switch {

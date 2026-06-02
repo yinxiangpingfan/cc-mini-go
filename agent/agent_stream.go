@@ -12,13 +12,11 @@ import (
 	"github.com/yinxiangpingfan/cc-mini-go/errors"
 )
 
-// StreamAgent 流式对话请求。ctx 取消会中断进行中的流式 LLM 请求并尽快退出循环。
-func (a *ChatCompletionAgent) StreamAgent(ctx context.Context, messages []client.Message, system string) ([]any, error) {
-	//定义信息
-	allMsg := make([]any, 0, len(messages))
-	for _, m := range messages {
-		allMsg = append(allMsg, m)
-	}
+// StreamAgent 流式对话请求。messages 为完整历史（异构 []any），进出同型以便调用方闭环回传。
+// ctx 取消会中断进行中的流式 LLM 请求并尽快退出循环。
+func (a *ChatCompletionAgent) StreamAgent(ctx context.Context, messages []any, system string) ([]any, error) {
+	//定义信息：拷贝一份，避免就地改写调用方持有的历史切片
+	allMsg := append([]any(nil), messages...)
 	//存储工具信息与调用函数
 	tools := make(map[string]agent_tools.ToolFunc)
 	clientTool := a.ToolInit(&tools)
