@@ -33,4 +33,6 @@ var (
 	ErrSubAgentRequest = fmt.Errorf("subagent request failed")
 	// ErrUnknownSkill 加载了不存在的 skill，使用时 fmt.Sprintf(ErrUnknownSkill, name, knownList)
 	ErrUnknownSkill = "unknown skill '%s'. available skills: %s"
+	// ErrCompactSummary 压缩时生成对话摘要失败
+	ErrCompactSummary = fmt.Errorf("failed to summarize conversation for compaction")
 )

@@ -32,11 +32,14 @@ func (c *Call) NewCallRequest(model string, messages []any, stream bool, system 
 	allMsgs := make([]any, 0, 1+len(messages))
 	allMsgs = append(allMsgs, *c.Cm.NewSystemMessage(system))
 	reqBody := CallRequest{
-		Model:      model,
-		Messages:   append(allMsgs, messages...),
-		Stream:     stream,
-		Tools:      tools,
-		ToolChoice: "auto",
+		Model:    model,
+		Messages: append(allMsgs, messages...),
+		Stream:   stream,
+		Tools:    tools,
+	}
+	// 仅在确实提供了工具时设置 tool_choice，否则部分服务端会因 "tool_choice 但无 tools" 报错
+	if len(tools) > 0 {
+		reqBody.ToolChoice = "auto"
 	}
 	reqBodyJson, err := json.Marshal(reqBody)
 	if err != nil {

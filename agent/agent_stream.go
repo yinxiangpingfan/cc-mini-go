@@ -23,6 +23,12 @@ func (a *ChatCompletionAgent) StreamAgent(messages []client.Message, system stri
 	clientTool := a.ToolInit(&tools)
 	//把 skill 目录拼进 system prompt（轻量发现层）
 	system = a.withSkillCatalog(system)
+	//上下文压缩状态（跨轮）
+	compactState := agent_tools.NewCompactState()
+	//会话转录：整段对话持续以 jsonl 落盘，与压缩解耦
+	transcript := agent_tools.NewSessionTranscript()
+	//任意返回路径都把最后的消息补写入转录
+	defer func() { _ = transcript.Flush(allMsg) }()
 
 	//定义回调函数
 	activeToolCalls := make(map[int]*client.StreamToolCall) // 当前存在的 ToolCalls
@@ -92,6 +98,14 @@ func (a *ChatCompletionAgent) StreamAgent(messages []client.Message, system stri
 		contentBuilder.Reset()
 		activeToolCalls = make(map[int]*client.StreamToolCall)
 
+		// 持续把本轮之前新增的消息落盘（压缩前先写，保住完整历史）
+		_ = transcript.Flush(allMsg)
+		// 上下文压缩：先微压缩旧工具结果，再判断整体是否过大需要完整压缩
+		allMsg = agent_tools.MicroCompact(allMsg)
+		if agent_tools.EstimateContextSize(allMsg) > agent_tools.ContextLimit {
+			allMsg = agent_tools.CompactHistory(a.call, a.cf.Model, allMsg, compactState, "")
+		}
+
 		// 本轮计数 +1（计划已多少轮未更新）
 		agent_tools.ToDoList.MU.Lock()
 		if len(agent_tools.ToDoList.Items) > 0 {
@@ -151,6 +165,9 @@ func (a *ChatCompletionAgent) StreamAgent(messages []client.Message, system stri
 			return allMsg, nil
 		}
 
+		//检测本轮是否请求手动压缩
+		manualCompact, compactFocus := agent_tools.DetectManualCompact(toolCalls)
+
 		// 并发执行工具
 		var wg sync.WaitGroup
 		var mu sync.Mutex
@@ -166,7 +183,8 @@ func (a *ChatCompletionAgent) StreamAgent(messages []client.Message, system stri
 					if v.Function.Arguments != nil {
 						json.Unmarshal([]byte(*v.Function.Arguments), &args)
 					}
-					res := f(args)
+					//大结果落盘，只在上下文留预览
+					res := agent_tools.PersistLargeOutput(*v.Id, f(args))
 					mu.Lock()
 					//追加工具返回信息
 					allMsg = append(allMsg, *a.call.Cm.NewToolsMessage(*v.Id, res))
@@ -175,5 +193,10 @@ func (a *ChatCompletionAgent) StreamAgent(messages []client.Message, system stri
 			}
 		}
 		wg.Wait()
+		//手动压缩与自动压缩复用同一条机制（压缩前先把本轮消息落盘）
+		if manualCompact {
+			_ = transcript.Flush(allMsg)
+			allMsg = agent_tools.CompactHistory(a.call, a.cf.Model, allMsg, compactState, compactFocus)
+		}
 	}
 }

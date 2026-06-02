@@ -92,3 +92,26 @@ var LoadSkillPrompt = `"Load the full body of a named skill into the current con
 
 // SkillCatalogHeader 是注入 system prompt 的 skill 目录段落标题
 var SkillCatalogHeader = "Skills available (call load_skill to load the full instructions before acting):"
+
+// CompactPrompt 是 compact 工具的描述（手动触发一次完整压缩）
+var CompactPrompt = `"Summarize the earlier conversation so work can continue in a smaller context. "
+        "Use this when the conversation has grown long and old details are no longer needed in full. "
+        "Optionally pass 'focus' to highlight what must be preserved for the next steps."`
+
+// CompactSummarySystemPrompt 是生成压缩摘要时给模型的系统提示
+var CompactSummarySystemPrompt = `You are a summarizer for a coding agent. Produce a compact but concrete summary so work can continue.`
+
+// CompactSummaryPromptPrefix 是生成压缩摘要时拼在对话 JSON 之前的指令
+var CompactSummaryPromptPrefix = `Summarize this coding-agent conversation so work can continue.
+Preserve:
+1. The current goal
+2. Important findings and decisions
+3. Files read or changed
+4. Remaining work
+5. User constraints and preferences
+Be compact but concrete.
+
+`
+
+// CompactNotice 是压缩后注入的单条 user 消息前缀，告诉模型历史已被压缩
+var CompactNotice = "This conversation was compacted so the agent can continue working."

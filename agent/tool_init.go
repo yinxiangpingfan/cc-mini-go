@@ -31,6 +31,8 @@ func (a *ChatCompletionAgent) ToolInit(tools *map[string]func(input map[string]a
 	(*tools)[subAgentTool.Name] = subAgentTool.Func
 	loadSkillTool := tool.NewLoadSkillTool(tool.Skills)
 	(*tools)[loadSkillTool.Name] = loadSkillTool.Func
+	compactTool := tool.NewCompactTool()
+	(*tools)[compactTool.Name] = compactTool.Func
 	return []client.Tool{
 		timeNowTool.TimeNowInfoForLLm(),
 		readFileTool.ReadFileInfoForLLm(),
@@ -39,5 +41,6 @@ func (a *ChatCompletionAgent) ToolInit(tools *map[string]func(input map[string]a
 		todoListTool.TodoListInfoLLm(),
 		subAgentTool.SubAgentInfoForLLM(),
 		loadSkillTool.LoadSkillInfoForLLM(),
+		compactTool.CompactInfoForLLM(),
 	}
 }
