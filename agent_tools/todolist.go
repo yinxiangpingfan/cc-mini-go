@@ -3,6 +3,7 @@ package agent_tools
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/yinxiangpingfan/cc-mini-go/client"
@@ -55,6 +56,34 @@ func updateTodoList(items []TodoItem) error {
 	ToDoList.RoundsSinceUpdate = 0
 	ToDoList.MU.Unlock()
 	return nil
+}
+
+// statusMarkers 把任务状态映射成清单前的标记符号。
+var statusMarkers = map[string]string{
+	StatusPending:    "[ ]",
+	StatusInProgress: "[>]",
+	StatusCompleted:  "[x]",
+}
+
+// Render 把当前计划渲染成多行文本，每行一个任务，前缀为状态标记。
+// 等价于示例中的 Python render：未知状态兜底为 "[ ]"，空计划返回空串。
+// 内部加读锁，可在 agent 循环中安全并发调用。
+func (p *PlanningState) Render() string {
+	p.MU.RLock()
+	defer p.MU.RUnlock()
+
+	if len(p.Items) == 0 {
+		return ""
+	}
+	lines := make([]string, 0, len(p.Items))
+	for _, item := range p.Items {
+		marker, ok := statusMarkers[item.todoTtem.Status]
+		if !ok {
+			marker = "[ ]"
+		}
+		lines = append(lines, fmt.Sprintf("%s %s", marker, item.todoTtem.Subject))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func NewTodoListTool() *Tools {
