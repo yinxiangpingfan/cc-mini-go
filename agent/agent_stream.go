@@ -202,10 +202,17 @@ func (a *ChatCompletionAgent) StreamAgent(ctx context.Context, messages []any, s
 					if rawArgs != "" {
 						json.Unmarshal([]byte(rawArgs), &args)
 					}
-					//大结果落盘，只在上下文留预览；safeToolCall 捕获工具 panic 避免崩溃
-					res := agent_tools.PersistLargeOutput(name, *v.Id, safeToolCall(ctx, name, f, args))
-					//图片结果拆成「文字摘要 + data URI」：摘要进 tool 消息，图片随后单独发
-					content, imageURI, isImage := agent_tools.SplitImageResult(res)
+					var content, imageURI string
+					var isImage bool
+					//权限闸：意图先过门，被拦截则不执行，但仍回传一条配对的 tool 结果
+					if denied, blocked := a.gateToolCall(ctx, *v.Id, name, rawArgs, args); blocked {
+						content = denied
+					} else {
+						//大结果落盘，只在上下文留预览；safeToolCall 捕获工具 panic 避免崩溃
+						res := agent_tools.PersistLargeOutput(name, *v.Id, safeToolCall(ctx, name, f, args))
+						//图片结果拆成「文字摘要 + data URI」：摘要进 tool 消息，图片随后单独发
+						content, imageURI, isImage = agent_tools.SplitImageResult(res)
+					}
 					a.emit(AgentEvent{Type: EventToolResult, ToolID: *v.Id, ToolName: name, Text: content})
 					mu.Lock()
 					//追加工具返回信息

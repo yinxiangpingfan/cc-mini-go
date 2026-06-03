@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yinxiangpingfan/cc-mini-go/agent/core"
 	"github.com/yinxiangpingfan/cc-mini-go/agent_tools"
 	"github.com/yinxiangpingfan/cc-mini-go/client"
 	"github.com/yinxiangpingfan/cc-mini-go/config"
@@ -16,6 +17,12 @@ type ChatCompletionAgent struct {
 	cf     *config.Config
 	call   *client.Call
 	events chan<- AgentEvent // 可选：向外广播进度事件（如重试），nil 表示不广播
+
+	perms   *core.PermissionEngine // 可选：工具执行前的权限闸；nil 表示不启用，跳过检查
+	approve ApprovalFunc           // 可选：ask 判定时的人机确认回调；nil 时 ask 按拒绝处理
+
+	permMu     sync.Mutex // 保护 denyStreak（工具在并发 goroutine 中各自判定）
+	denyStreak int        // 连续被拒次数，达阈值发 EventPermissionHint 后清零
 
 	mu             sync.Mutex // 保护 lastActivityAt（跨多次 Agent/StreamAgent 调用）
 	lastActivityAt time.Time  // 上次对话结束时刻，作为 microcompact 时间闸的基准
@@ -139,10 +146,17 @@ func (a *ChatCompletionAgent) Agent(ctx context.Context, messages []any, system 
 						a.emit(AgentEvent{Type: EventToolStart, ToolID: v.Id, ToolName: v.Function.Name, ToolArgs: v.Function.Arguments})
 						var args map[string]any
 						json.Unmarshal([]byte(v.Function.Arguments), &args)
-						//大结果落盘，只在上下文留预览；safeToolCall 捕获工具 panic 避免崩溃
-						res := agent_tools.PersistLargeOutput(v.Function.Name, v.Id, safeToolCall(ctx, v.Function.Name, f, args))
-						//图片结果拆成「文字摘要 + data URI」：摘要进 tool 消息，图片随后单独发
-						content, imageURI, isImage := agent_tools.SplitImageResult(res)
+						var content, imageURI string
+						var isImage bool
+						//权限闸：意图先过门，被拦截则不执行，但仍回传一条配对的 tool 结果
+						if denied, blocked := a.gateToolCall(ctx, v.Id, v.Function.Name, v.Function.Arguments, args); blocked {
+							content = denied
+						} else {
+							//大结果落盘，只在上下文留预览；safeToolCall 捕获工具 panic 避免崩溃
+							res := agent_tools.PersistLargeOutput(v.Function.Name, v.Id, safeToolCall(ctx, v.Function.Name, f, args))
+							//图片结果拆成「文字摘要 + data URI」：摘要进 tool 消息，图片随后单独发
+							content, imageURI, isImage = agent_tools.SplitImageResult(res)
+						}
 						a.emit(AgentEvent{Type: EventToolResult, ToolID: v.Id, ToolName: v.Function.Name, Text: content})
 						mu.Lock()
 						//追加工具返回信息
