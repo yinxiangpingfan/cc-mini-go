@@ -183,6 +183,7 @@ func (a *ChatCompletionAgent) StreamAgent(ctx context.Context, messages []any, s
 		// 并发执行工具
 		var wg sync.WaitGroup
 		var mu sync.Mutex
+		var imageURIs []string // 图片工具结果拆出的 data URI，待工具结果全部就位后再追加
 		for _, v := range activeToolCalls {
 			if v == nil || v.Function == nil || v.Function.Name == nil {
 				continue
@@ -196,22 +197,31 @@ func (a *ChatCompletionAgent) StreamAgent(ctx context.Context, messages []any, s
 					if v.Function.Arguments != nil {
 						rawArgs = *v.Function.Arguments
 					}
-					a.emit(AgentEvent{Type: EventToolStart, ToolName: name, ToolArgs: rawArgs})
+					a.emit(AgentEvent{Type: EventToolStart, ToolID: *v.Id, ToolName: name, ToolArgs: rawArgs})
 					var args map[string]any
 					if rawArgs != "" {
 						json.Unmarshal([]byte(rawArgs), &args)
 					}
 					//大结果落盘，只在上下文留预览；safeToolCall 捕获工具 panic 避免崩溃
 					res := agent_tools.PersistLargeOutput(name, *v.Id, safeToolCall(ctx, name, f, args))
-					a.emit(AgentEvent{Type: EventToolResult, ToolName: name, Text: res})
+					//图片结果拆成「文字摘要 + data URI」：摘要进 tool 消息，图片随后单独发
+					content, imageURI, isImage := agent_tools.SplitImageResult(res)
+					a.emit(AgentEvent{Type: EventToolResult, ToolID: *v.Id, ToolName: name, Text: content})
 					mu.Lock()
 					//追加工具返回信息
-					allMsg = append(allMsg, *a.call.Cm.NewToolsMessage(*v.Id, res))
+					allMsg = append(allMsg, *a.call.Cm.NewToolsMessage(*v.Id, content))
+					if isImage {
+						imageURIs = append(imageURIs, imageURI)
+					}
 					mu.Unlock()
 				}(v)
 			}
 		}
 		wg.Wait()
+		//图片作为独立的多模态 user 消息接在工具结果之后（保证 tool_call 配对先完整）
+		for _, uri := range imageURIs {
+			allMsg = append(allMsg, *a.call.Cm.NewImageMessage(uri))
+		}
 		//手动压缩与自动压缩复用同一条机制（压缩前先把本轮消息落盘）
 		if manualCompact {
 			_ = transcript.Flush(allMsg)

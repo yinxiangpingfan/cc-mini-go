@@ -28,6 +28,7 @@ type AgentEvent struct {
 	Text string
 
 	// 工具类事件
+	ToolID   string // 工具调用唯一 ID（tool_start / tool_result，用于精确配对，避免同名并发串台）
 	ToolName string // 工具名（tool_start / tool_result）
 	ToolArgs string // 工具的原始参数 JSON（tool_start）
 
