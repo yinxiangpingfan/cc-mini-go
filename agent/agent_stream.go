@@ -30,6 +30,8 @@ func (a *ChatCompletionAgent) StreamAgent(ctx context.Context, messages []any, s
 	defer func() { _ = transcript.Flush(allMsg) }()
 	//记录本次对话结束时刻，供下次 microcompact 时间闸判定
 	defer a.markActivity()
+	//会话级 hook：整个会话仅首条消息触发一次（sessionOnce 守护）
+	a.fireSessionStart()
 
 	//定义回调函数
 	activeToolCalls := make(map[int]*client.StreamToolCall) // 当前存在的 ToolCalls
@@ -183,7 +185,8 @@ func (a *ChatCompletionAgent) StreamAgent(ctx context.Context, messages []any, s
 		// 并发执行工具
 		var wg sync.WaitGroup
 		var mu sync.Mutex
-		var imageURIs []string // 图片工具结果拆出的 data URI，待工具结果全部就位后再追加
+		var imageURIs []string    // 图片工具结果拆出的 data URI，待工具结果全部就位后再追加
+		var injectedMsgs []string // hook（exit 2）注入的补充消息，同样待工具结果全部就位后再追加
 		for _, v := range activeToolCalls {
 			if v == nil || v.Function == nil || v.Function.Name == nil {
 				continue
@@ -202,17 +205,8 @@ func (a *ChatCompletionAgent) StreamAgent(ctx context.Context, messages []any, s
 					if rawArgs != "" {
 						json.Unmarshal([]byte(rawArgs), &args)
 					}
-					var content, imageURI string
-					var isImage bool
-					//权限闸：意图先过门，被拦截则不执行，但仍回传一条配对的 tool 结果
-					if denied, blocked := a.gateToolCall(ctx, *v.Id, name, rawArgs, args); blocked {
-						content = denied
-					} else {
-						//大结果落盘，只在上下文留预览；safeToolCall 捕获工具 panic 避免崩溃
-						res := agent_tools.PersistLargeOutput(name, *v.Id, safeToolCall(ctx, name, f, args))
-						//图片结果拆成「文字摘要 + data URI」：摘要进 tool 消息，图片随后单独发
-						content, imageURI, isImage = agent_tools.SplitImageResult(res)
-					}
+					//PreToolUse hook → 权限闸 → 执行 → PostToolUse hook，被拦截仍回传配对的 tool 结果
+					content, imageURI, isImage, inject := a.execToolWithHooks(ctx, *v.Id, name, rawArgs, args, f)
 					a.emit(AgentEvent{Type: EventToolResult, ToolID: *v.Id, ToolName: name, Text: content})
 					mu.Lock()
 					//追加工具返回信息
@@ -220,6 +214,7 @@ func (a *ChatCompletionAgent) StreamAgent(ctx context.Context, messages []any, s
 					if isImage {
 						imageURIs = append(imageURIs, imageURI)
 					}
+					injectedMsgs = append(injectedMsgs, inject...)
 					mu.Unlock()
 				}(v)
 			}
@@ -228,6 +223,10 @@ func (a *ChatCompletionAgent) StreamAgent(ctx context.Context, messages []any, s
 		//图片作为独立的多模态 user 消息接在工具结果之后（保证 tool_call 配对先完整）
 		for _, uri := range imageURIs {
 			allMsg = append(allMsg, *a.call.Cm.NewImageMessage(uri))
+		}
+		//hook 注入的补充消息接在所有工具结果之后，避免插在 tool_call 与其 result 之间破坏配对
+		for _, msg := range injectedMsgs {
+			allMsg = append(allMsg, *a.call.Cm.NewUserMessage(msg))
 		}
 		//手动压缩与自动压缩复用同一条机制（压缩前先把本轮消息落盘）
 		if manualCompact {

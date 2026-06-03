@@ -19,6 +19,8 @@ const (
 	EventRetry AgentEventType = "retry"
 	// EventPermissionHint 连续多次工具调用被权限拒绝时发出，提示用户可能卡住、建议切换模式。
 	EventPermissionHint AgentEventType = "permission_hint"
+	// EventHookNotice hook（如 SessionStart 欢迎语）想向用户展示的提示。
+	EventHookNotice AgentEventType = "hook_notice"
 )
 
 // AgentEvent 是 agent 运行过程中向外（如 TUI）广播的进度事件。

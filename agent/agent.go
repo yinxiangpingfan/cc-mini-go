@@ -20,6 +20,10 @@ type ChatCompletionAgent struct {
 
 	perms   *core.PermissionEngine // 可选：工具执行前的权限闸；nil 表示不启用，跳过检查
 	approve ApprovalFunc           // 可选：ask 判定时的人机确认回调；nil 时 ask 按拒绝处理
+	hooks   *core.HookRunner       // 可选：工具前后的 hook 扩展点；nil 表示不启用，所有时机放行
+
+	builtinHooks bool      // 是否注册内置 hook（WithBuiltinHooks 开启），在构造末尾生效
+	sessionOnce  sync.Once // 保证 SessionStart 整个会话只触发一次（Agent/StreamAgent 每条消息都重入）
 
 	permMu     sync.Mutex // 保护 denyStreak（工具在并发 goroutine 中各自判定）
 	denyStreak int        // 连续被拒次数，达阈值发 EventPermissionHint 后清零
@@ -54,6 +58,10 @@ func NewChatCompletionAgent(cf *config.Config, call *client.Call, opts ...AgentO
 	for _, opt := range opts {
 		opt(a)
 	}
+	// 选项应用完毕后再注册内置 hook：此时 hooks/events 等都已就位，且能叠加到自定义 runner 上。
+	if a.builtinHooks {
+		a.registerBuiltinHooks()
+	}
 	return a
 }
 
@@ -75,6 +83,8 @@ func (a *ChatCompletionAgent) Agent(ctx context.Context, messages []any, system 
 	defer func() { _ = transcript.Flush(allMsg) }()
 	//记录本次对话结束时刻，供下次 microcompact 时间闸判定
 	defer a.markActivity()
+	//会话级 hook：整个会话仅首条消息触发一次（sessionOnce 守护）
+	a.fireSessionStart()
 
 	//开始请求LLM（带最大轮次保护，防止工具调用无限循环）
 	for turn := 0; turn < agentMaxTurns; turn++ {
@@ -137,7 +147,8 @@ func (a *ChatCompletionAgent) Agent(ctx context.Context, messages []any, system 
 			manualCompact, compactFocus := agent_tools.DetectManualCompact(res.Choices[0].Message.ToolCalls)
 			var wg sync.WaitGroup
 			var mu sync.Mutex
-			var imageURIs []string // 图片工具结果拆出的 data URI，待工具结果全部就位后再追加
+			var imageURIs []string    // 图片工具结果拆出的 data URI，待工具结果全部就位后再追加
+			var injectedMsgs []string // hook（exit 2）注入的补充消息，同样待工具结果全部就位后再追加
 			for _, v := range res.Choices[0].Message.ToolCalls {
 				if f, exists := tools[v.Function.Name]; exists {
 					wg.Add(1)
@@ -146,17 +157,8 @@ func (a *ChatCompletionAgent) Agent(ctx context.Context, messages []any, system 
 						a.emit(AgentEvent{Type: EventToolStart, ToolID: v.Id, ToolName: v.Function.Name, ToolArgs: v.Function.Arguments})
 						var args map[string]any
 						json.Unmarshal([]byte(v.Function.Arguments), &args)
-						var content, imageURI string
-						var isImage bool
-						//权限闸：意图先过门，被拦截则不执行，但仍回传一条配对的 tool 结果
-						if denied, blocked := a.gateToolCall(ctx, v.Id, v.Function.Name, v.Function.Arguments, args); blocked {
-							content = denied
-						} else {
-							//大结果落盘，只在上下文留预览；safeToolCall 捕获工具 panic 避免崩溃
-							res := agent_tools.PersistLargeOutput(v.Function.Name, v.Id, safeToolCall(ctx, v.Function.Name, f, args))
-							//图片结果拆成「文字摘要 + data URI」：摘要进 tool 消息，图片随后单独发
-							content, imageURI, isImage = agent_tools.SplitImageResult(res)
-						}
+						//PreToolUse hook → 权限闸 → 执行 → PostToolUse hook，被拦截仍回传配对的 tool 结果
+						content, imageURI, isImage, inject := a.execToolWithHooks(ctx, v.Id, v.Function.Name, v.Function.Arguments, args, f)
 						a.emit(AgentEvent{Type: EventToolResult, ToolID: v.Id, ToolName: v.Function.Name, Text: content})
 						mu.Lock()
 						//追加工具返回信息
@@ -164,6 +166,7 @@ func (a *ChatCompletionAgent) Agent(ctx context.Context, messages []any, system 
 						if isImage {
 							imageURIs = append(imageURIs, imageURI)
 						}
+						injectedMsgs = append(injectedMsgs, inject...)
 						mu.Unlock()
 					}()
 				}
@@ -172,6 +175,10 @@ func (a *ChatCompletionAgent) Agent(ctx context.Context, messages []any, system 
 			//图片作为独立的多模态 user 消息接在工具结果之后（保证 tool_call 配对先完整）
 			for _, uri := range imageURIs {
 				allMsg = append(allMsg, *a.call.Cm.NewImageMessage(uri))
+			}
+			//hook 注入的补充消息接在所有工具结果之后，避免插在 tool_call 与其 result 之间破坏配对
+			for _, msg := range injectedMsgs {
+				allMsg = append(allMsg, *a.call.Cm.NewUserMessage(msg))
 			}
 			//手动压缩与自动压缩复用同一条机制（压缩前先把本轮消息落盘）
 			if manualCompact {
