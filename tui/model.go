@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/yinxiangpingfan/cc-mini-go/agent"
+	"github.com/yinxiangpingfan/cc-mini-go/agent/core"
 	"github.com/yinxiangpingfan/cc-mini-go/client"
 	"github.com/yinxiangpingfan/cc-mini-go/prompt"
 )
@@ -32,6 +33,7 @@ const (
 	entryTool
 	entryTiming
 	entryError
+	entryNotice // 系统提示（如连续被拒的权限提示）
 )
 
 // entry 是 transcript 里追加式的一条记录（不就地销毁，整轮结束后仍保留）。
@@ -69,6 +71,7 @@ type model struct {
 	cm      *client.ChatCompletionMessage
 	events  chan agent.AgentEvent
 	model   string
+	perms   *core.PermissionEngine // 权限引擎；Shift+Tab 切换模式，帮助行展示当前模式
 
 	input    textarea.Model
 	viewport viewport.Model
@@ -98,9 +101,11 @@ type model struct {
 
 	verbose    bool   // Ctrl+O：详细模式（显示思考 + 完整工具参数）
 	killBuffer string // Ctrl+K/U 删除的文本，供 Ctrl+Y 粘贴
+
+	pendingPerm *permissionAskMsg // 非 nil：正在等待用户对某次工具调用做 y/n 确认
 }
 
-func newModel(ag *agent.ChatCompletionAgent, cm *client.ChatCompletionMessage, events chan agent.AgentEvent, modelName string) *model {
+func newModel(ag *agent.ChatCompletionAgent, cm *client.ChatCompletionMessage, events chan agent.AgentEvent, modelName string, perms *core.PermissionEngine) *model {
 	ta := textarea.New()
 	ta.Placeholder = `问点什么…（Enter 发送，\+Enter 或 Ctrl+J 换行）`
 	ta.ShowLineNumbers = false
@@ -119,6 +124,7 @@ func newModel(ag *agent.ChatCompletionAgent, cm *client.ChatCompletionMessage, e
 		cm:          cm,
 		events:      events,
 		model:       modelName,
+		perms:       perms,
 		input:       ta,
 		spinner:     sp,
 		curAsstIdx:  -1,
@@ -159,6 +165,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshViewport()
 		return m, m.waitEvent()
 
+	case permissionAskMsg:
+		// 经 program.Send 注入：进入等待确认状态，渲染 y/n 提示框。
+		m.pendingPerm = &msg
+		m.refreshViewport()
+		return m, nil
+
 	case doneMsg:
 		m.finishTurn(msg)
 		m.refreshViewport()
@@ -183,6 +195,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// 权限确认期间：只认 y/n（及 esc/ctrl+c），吞掉其它按键，避免误输入。
+	if m.pendingPerm != nil {
+		return m.handlePermKey(msg)
+	}
+
 	// 粘贴（bracketed paste）：先让 textarea 插入（它会把 \r 归一成 \n），
 	// 再按归一后的值算高度，并用 SetValue 把内部视口拉回顶部——否则多行粘贴
 	// 会卡在内部视口下滚的位置（之前只剩末行 / 顶掉首行）。
@@ -230,6 +247,14 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// 切换详细输出（思考 + 完整工具参数）
 		m.verbose = !m.verbose
 		m.refreshViewport()
+		return m, nil
+
+	case "shift+tab":
+		// 循环切换权限模式：auto → plan → default → auto（即时生效，下一个工具判定即用新模式）
+		if m.perms != nil {
+			m.perms.SetMode(cycleMode(m.perms.Mode()))
+			m.refreshViewport()
+		}
 		return m, nil
 
 	case "ctrl+y":
@@ -293,6 +318,34 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	return m, nil
+}
+
+// handlePermKey 处理权限确认框的按键：y/Y/enter 允许，n/N/esc 拒绝，ctrl+c 拒绝并中断本轮。
+func (m *model) handlePermKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y", "enter":
+		m.resolvePerm(true)
+	case "n", "N", "esc":
+		m.resolvePerm(false)
+	case "ctrl+c":
+		// 拒绝本次，并中断整轮生成
+		m.resolvePerm(false)
+		if m.cancel != nil {
+			m.cancel()
+		}
+	}
+	return m, nil // 确认期间吞掉其它按键
+}
+
+// resolvePerm 把用户决定回传给等待中的 approver 并退出确认状态。
+// reply 带缓冲，即使 approver 已因 ctx 取消提前返回，这里发送也不会阻塞。
+func (m *model) resolvePerm(ok bool) {
+	if m.pendingPerm == nil {
+		return
+	}
+	m.pendingPerm.reply <- ok
+	m.pendingPerm = nil
+	m.refreshViewport()
 }
 
 // deletedChunk 返回 before 相对 after 被删掉的连续片段（用于 Ctrl+K/U 后存入 killBuffer）。
@@ -416,6 +469,12 @@ func (m *model) applyEvent(ev agent.AgentEvent) {
 		m.retryUntil = time.Now().Add(ev.Delay)
 		m.retryAttempt = ev.Attempt
 		m.retryMax = ev.Max
+
+	case agent.EventPermissionHint:
+		// 连续被拒提示：作为系统通知插入 transcript，并让后续正文另起一块
+		m.curAsstIdx = -1
+		m.curThinkIdx = -1
+		m.entries = append(m.entries, entry{kind: entryNotice, text: ev.Text})
 	}
 }
 
@@ -424,6 +483,11 @@ func (m *model) finishTurn(msg doneMsg) {
 	m.running = false
 	m.cancel = nil
 	m.retrying = false
+	// 若仍有未决确认（如被取消时），回拒以解阻塞 approver 并退出确认态。
+	if m.pendingPerm != nil {
+		m.pendingPerm.reply <- false
+		m.pendingPerm = nil
+	}
 	elapsed := int(time.Since(m.startTime).Seconds())
 
 	// 完整历史闭环：用 agent 返回的 []any 覆盖本地历史，工具往返也随之跨轮保留。

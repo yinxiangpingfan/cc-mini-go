@@ -51,12 +51,22 @@ func run() error {
 	cm := client.NewChatCompletionMessage()
 	call := client.NewCall(cl, cm, slog.Default())
 	events := make(chan agent.AgentEvent, eventBufferSize)
-	ag := agent.NewChatCompletionAgent(&cf, call, agent.WithEventChannel(events))
+
+	// 权限闸：模式与规则读自 setting.json 的 permission 段（缺省 auto + 内置 bash deny）。
+	// approver 把 ask 判定桥接到 TUI 的 y/n 确认框；program 句柄在创建后再注入（见下）。
+	perms := buildEngine(cf.Permission)
+	ap := &approver{}
+	ag := agent.NewChatCompletionAgent(&cf, call,
+		agent.WithEventChannel(events),
+		agent.WithPermissions(perms),
+		agent.WithApproval(ap.Approve),
+	)
 
 	// 4. 启动 Bubble Tea。用指针 model 以便后台 goroutine 拿到 program 句柄。
-	m := newModel(ag, cm, events, cf.Model)
+	m := newModel(ag, cm, events, cf.Model, perms)
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	m.program = p
+	ap.setProgram(p) // program 就绪后注入 approver，打破构造环
 
 	_, err = p.Run()
 	return err

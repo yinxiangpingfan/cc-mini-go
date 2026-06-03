@@ -32,4 +32,12 @@ var (
 	inputBorderStyle = lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).
 				BorderForeground(colorSubtle)
+
+	// 权限确认框：黄色边框，醒目地把待确认的工具调用与按键提示框起来。
+	permBorderStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(colorRetry).
+			Padding(0, 1)
+	permTitleStyle = lipgloss.NewStyle().Foreground(colorRetry).Bold(true)
+	permKeyStyle   = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
 )

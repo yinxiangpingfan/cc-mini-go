@@ -104,6 +104,10 @@ func (m *model) renderTranscript(width int) string {
 		case entryError:
 			b.WriteString(errStyle.Render("✗ " + e.text))
 			b.WriteString("\n\n")
+
+		case entryNotice:
+			b.WriteString(permTitleStyle.Render("⚠ " + e.text))
+			b.WriteString("\n\n")
 		}
 	}
 
@@ -125,6 +129,13 @@ func (m *model) View() string {
 	if !m.ready {
 		return "正在初始化…"
 	}
+	// 等待权限确认时，用 y/n 提示框取代输入区。
+	if m.pendingPerm != nil {
+		return strings.Join([]string{
+			m.viewport.View(),
+			m.permPromptView(),
+		}, "\n")
+	}
 	help := helpStyle.Render(m.helpLine())
 	return strings.Join([]string{
 		m.viewport.View(),
@@ -133,11 +144,32 @@ func (m *model) View() string {
 	}, "\n")
 }
 
-func (m *model) helpLine() string {
-	if m.running {
-		return "ctrl+c 中断 · ctrl+o 详细 · 滚轮/pgup/pgdn 滚动"
+// permPromptView 渲染权限确认框：待确认的工具调用 + 原因 + 按键提示。
+func (m *model) permPromptView() string {
+	req := m.pendingPerm.req
+	desc := toolDescriptor(req.ToolName, req.RawArgs, 200)
+
+	var b strings.Builder
+	b.WriteString(permTitleStyle.Render("⚠ 需要确认") + "  " + toolStyle.Render(desc))
+	if req.Reason != "" {
+		b.WriteString("\n" + helpStyle.Render(req.Reason))
 	}
-	return `enter 发送 · \+enter/ctrl+j 换行 · ctrl+o 详细 · ctrl+l 清屏 · ctrl+c 退出 · 滚轮 滚动`
+	b.WriteString("\n" +
+		permKeyStyle.Render("y") + " 允许   " +
+		permKeyStyle.Render("n") + " 拒绝   " +
+		helpStyle.Render("esc 拒绝 · ctrl+c 中断本轮"))
+	return permBorderStyle.Width(m.width - 2).Render(b.String())
+}
+
+func (m *model) helpLine() string {
+	mode := ""
+	if m.perms != nil {
+		mode = "[" + modeLabel(m.perms.Mode()) + "] "
+	}
+	if m.running {
+		return mode + "ctrl+c 中断 · shift+tab 模式 · ctrl+o 详细 · 滚轮 滚动"
+	}
+	return mode + `enter 发送 · \+enter 换行 · shift+tab 模式 · ctrl+o 详细 · ctrl+l 清屏 · ctrl+c 退出`
 }
 
 // ---- 渲染辅助 ----
