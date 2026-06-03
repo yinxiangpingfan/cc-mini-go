@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"math/rand/v2"
 	"strings"
 	"time"
@@ -103,6 +104,18 @@ type model struct {
 	killBuffer string // Ctrl+K/U 删除的文本，供 Ctrl+Y 粘贴
 
 	pendingPerm *permissionAskMsg // 非 nil：正在等待用户对某次工具调用做 y/n 确认
+
+	// 正文里内联 <think>…</think> 的流式解析状态（标签可能跨 token 分块到达）
+	inThink      bool   // 当前是否处于 think 段内
+	thinkPending string // 尾部可能是半截标签的缓冲，留到下个分块拼合
+
+	plan []todoItem // 当前计划（todo_list 工具结果解析而来），常驻面板展示
+}
+
+// todoItem 是 todo_list 工具结果里的一个任务项（与 agent_tools.TodoItem 同形）。
+type todoItem struct {
+	Subject string `json:"subject"`
+	Status  string `json:"status"`
 }
 
 func newModel(ag *agent.ChatCompletionAgent, cm *client.ChatCompletionMessage, events chan agent.AgentEvent, modelName string, perms *core.PermissionEngine) *model {
@@ -404,6 +417,8 @@ func (m *model) send() (tea.Model, tea.Cmd) {
 	// 重置本轮流式定位与状态
 	m.curAsstIdx = -1
 	m.curThinkIdx = -1
+	m.inThink = false
+	m.thinkPending = ""
 	m.toolIdx = make(map[string]int)
 	m.retrying = false
 	m.running = true
@@ -434,22 +449,12 @@ func (m *model) applyEvent(ev agent.AgentEvent) {
 
 	switch ev.Type {
 	case agent.EventReasoning:
-		m.curAsstIdx = -1 // 思考与正文分块
-		if m.curThinkIdx < 0 {
-			m.entries = append(m.entries, entry{kind: entryThinking, text: ev.Text})
-			m.curThinkIdx = len(m.entries) - 1
-		} else {
-			m.entries[m.curThinkIdx].text += ev.Text
-		}
+		// 独立 reasoning 流（部分模型单独下发）：直接进思考块
+		m.appendThink(ev.Text)
 
 	case agent.EventContent:
-		m.curThinkIdx = -1
-		if m.curAsstIdx < 0 {
-			m.entries = append(m.entries, entry{kind: entryAssistant, text: ev.Text})
-			m.curAsstIdx = len(m.entries) - 1
-		} else {
-			m.entries[m.curAsstIdx].text += ev.Text
-		}
+		// 正文里可能内联 <think>…</think>：流式拆分，思考段进思考块、其余进正文
+		m.feedContent(ev.Text)
 
 	case agent.EventToolStart:
 		m.curAsstIdx = -1 // 工具后若再有正文，另起一块
@@ -462,6 +467,9 @@ func (m *model) applyEvent(ev agent.AgentEvent) {
 			m.entries[idx].toolDone = true
 			m.entries[idx].text = toolResultPreview(ev.Text)
 		}
+		if ev.ToolName == "todo_list" {
+			m.updatePlan(ev.Text) // 同步常驻计划面板
+		}
 
 	case agent.EventRetry:
 		// 记录倒计时基准；render 时按 retryUntil 实时算剩余秒，逐秒跳动
@@ -470,12 +478,119 @@ func (m *model) applyEvent(ev agent.AgentEvent) {
 		m.retryAttempt = ev.Attempt
 		m.retryMax = ev.Max
 
-	case agent.EventPermissionHint:
-		// 连续被拒提示：作为系统通知插入 transcript，并让后续正文另起一块
+	case agent.EventPermissionHint, agent.EventHookNotice:
+		// 系统通知（连续被拒提示 / hook 提示）：插入 transcript，并让后续正文另起一块
 		m.curAsstIdx = -1
 		m.curThinkIdx = -1
 		m.entries = append(m.entries, entry{kind: entryNotice, text: ev.Text})
 	}
+}
+
+// think 标签：正文里内联的思考分隔符。
+const (
+	thinkOpen  = "<think>"
+	thinkClose = "</think>"
+)
+
+// feedContent 流式解析正文里的 <think>…</think>：思考段路由到思考块，其余进正文。
+// 标签可能被切到不同 token 分块里，故用 thinkPending 暂存「尾部可能是标签前缀」的部分。
+func (m *model) feedContent(text string) {
+	buf := m.thinkPending + text
+	m.thinkPending = ""
+	for buf != "" {
+		tag := thinkOpen
+		if m.inThink {
+			tag = thinkClose
+		}
+		if i := strings.Index(buf, tag); i >= 0 {
+			m.emitContentSeg(buf[:i]) // 标签前的部分属当前模式
+			buf = buf[i+len(tag):]
+			m.inThink = !m.inThink // 跨过标签切换模式
+			continue
+		}
+		// 没有完整标签：把可能是半截标签的尾巴留到下个分块
+		hold := suffixPrefixLen(buf, tag)
+		m.emitContentSeg(buf[:len(buf)-hold])
+		m.thinkPending = buf[len(buf)-hold:]
+		buf = ""
+	}
+}
+
+// emitContentSeg 按当前模式把一段文本并入思考块或正文块（空串忽略）。
+func (m *model) emitContentSeg(seg string) {
+	if seg == "" {
+		return
+	}
+	if m.inThink {
+		m.appendThink(seg)
+	} else {
+		m.appendAsst(seg)
+	}
+}
+
+// appendThink 把文本并入当前思考块（与正文分块）。
+func (m *model) appendThink(text string) {
+	if text == "" {
+		return
+	}
+	m.curAsstIdx = -1
+	if m.curThinkIdx < 0 {
+		m.entries = append(m.entries, entry{kind: entryThinking, text: text})
+		m.curThinkIdx = len(m.entries) - 1
+	} else {
+		m.entries[m.curThinkIdx].text += text
+	}
+}
+
+// appendAsst 把文本并入当前正文块（与思考分块）。
+func (m *model) appendAsst(text string) {
+	if text == "" {
+		return
+	}
+	m.curThinkIdx = -1
+	if m.curAsstIdx < 0 {
+		m.entries = append(m.entries, entry{kind: entryAssistant, text: text})
+		m.curAsstIdx = len(m.entries) - 1
+	} else {
+		m.entries[m.curAsstIdx].text += text
+	}
+}
+
+// suffixPrefixLen 返回 s 的最长后缀长度，使该后缀同时是 tag 的前缀。
+// 用于跨分块的半截标签：如 s 以 "<thi" 结尾、tag 是 "<think>"，则返回 4。
+func suffixPrefixLen(s, tag string) int {
+	n := len(tag) - 1
+	if n > len(s) {
+		n = len(s)
+	}
+	for ; n > 0; n-- {
+		if strings.HasSuffix(s, tag[:n]) {
+			return n
+		}
+	}
+	return 0
+}
+
+// updatePlan 从 todo_list 工具结果（{"todos":[…]}）解析出计划，供常驻面板展示。
+// 出错结果（无 todos 字段）不覆盖现有计划，避免误清空。
+func (m *model) updatePlan(toolResult string) {
+	var res struct {
+		Todos []todoItem `json:"todos"`
+	}
+	if json.Unmarshal([]byte(toolResult), &res) == nil && res.Todos != nil {
+		m.plan = res.Todos
+		m.relayout() // 面板高度变化 → 重排 viewport
+	}
+}
+
+// hasActivePlan 是否有需要展示的计划：存在且尚有未完成项（全完成则收起面板）。
+func (m *model) hasActivePlan() bool {
+	for _, it := range m.plan {
+		if it.Status != "completed" {
+			return true
+		}
+	}
+	return false
 }
 
 // finishTurn 收尾一轮：提交历史、追加计时/错误条目、清状态。
@@ -483,6 +598,11 @@ func (m *model) finishTurn(msg doneMsg) {
 	m.running = false
 	m.cancel = nil
 	m.retrying = false
+	// 流结束：把可能残留的半截标签缓冲按当前模式落地（它终究不是标签）
+	if m.thinkPending != "" {
+		m.emitContentSeg(m.thinkPending)
+		m.thinkPending = ""
+	}
 	// 若仍有未决确认（如被取消时），回拒以解阻塞 approver 并退出确认态。
 	if m.pendingPerm != nil {
 		m.pendingPerm.reply <- false

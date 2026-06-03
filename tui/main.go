@@ -60,6 +60,7 @@ func run() error {
 		agent.WithEventChannel(events),
 		agent.WithPermissions(perms),
 		agent.WithApproval(ap.Approve),
+		agent.WithBuiltinHooks(), // 内置 hook：会话欢迎语 + 工具审计（逻辑都在 agent/hooks_builtin.go）
 	)
 
 	// 4. 启动 Bubble Tea。用指针 model 以便后台 goroutine 拿到 program 句柄。

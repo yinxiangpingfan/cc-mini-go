@@ -28,8 +28,8 @@ func (m *model) relayout() {
 	if !m.ready {
 		return
 	}
-	// 垂直预算：输入块(input 高度 + 边框2) + 帮助行(1)
-	vpHeight := m.height - (m.input.Height() + 2) - 1
+	// 垂直预算：计划面板 + 输入块(input 高度 + 边框2) + 帮助行(1)
+	vpHeight := m.height - m.planPanelHeight() - (m.input.Height() + 2) - 1
 	if vpHeight < 1 {
 		vpHeight = 1
 	}
@@ -129,19 +129,72 @@ func (m *model) View() string {
 	if !m.ready {
 		return "正在初始化…"
 	}
+	// 计划面板（若有未完成计划）常驻在 viewport 与输入区之间。
+	parts := []string{m.viewport.View()}
+	if panel := m.planPanelView(); panel != "" {
+		parts = append(parts, panel)
+	}
+
 	// 等待权限确认时，用 y/n 提示框取代输入区。
 	if m.pendingPerm != nil {
-		return strings.Join([]string{
-			m.viewport.View(),
-			m.permPromptView(),
-		}, "\n")
+		parts = append(parts, m.permPromptView())
+		return strings.Join(parts, "\n")
 	}
-	help := helpStyle.Render(m.helpLine())
-	return strings.Join([]string{
-		m.viewport.View(),
+	parts = append(parts,
 		inputBorderStyle.Render(m.input.View()),
-		help,
-	}, "\n")
+		helpStyle.Render(m.helpLine()),
+	)
+	return strings.Join(parts, "\n")
+}
+
+// planMarkers 把任务状态映射成清单标记（对齐 agent_tools.statusMarkers）。
+var planMarkers = map[string]string{
+	"pending":     "[ ]",
+	"in_progress": "[>]",
+	"completed":   "[x]",
+}
+
+// planStyleFor 按任务状态选配色。
+func planStyleFor(status string) lipgloss.Style {
+	switch status {
+	case "completed":
+		return planDoneStyle
+	case "in_progress":
+		return planActiveStyle
+	default:
+		return planPendingStyle
+	}
+}
+
+// planPanelHeight 计划面板占的行数（含边框）；无活动计划时为 0。
+// 必须与 planPanelView 的实际渲染行数一致，否则 viewport 高度算错。
+func (m *model) planPanelHeight() int {
+	if !m.hasActivePlan() {
+		return 0
+	}
+	return len(m.plan) + 1 + 2 // 标题 1 行 + 任务行 + 边框 2 行
+}
+
+// planPanelView 渲染计划面板：标题 + 每个任务一行（按状态分色）。无活动计划时返回空串。
+func (m *model) planPanelView() string {
+	if !m.hasActivePlan() {
+		return ""
+	}
+	innerW := m.width - 4 // 边框 2 + 左右 padding 2，留给文本的宽度
+	if innerW < 1 {
+		innerW = 1
+	}
+	var b strings.Builder
+	b.WriteString(planTitleStyle.Render("Plan"))
+	for _, it := range m.plan {
+		marker, ok := planMarkers[it.Status]
+		if !ok {
+			marker = "[ ]"
+		}
+		line := truncate(oneLine(marker+" "+it.Subject), innerW) // 截断防换行，保证行数与 height 一致
+		b.WriteString("\n" + planStyleFor(it.Status).Render(line))
+	}
+	return planBorderStyle.Width(m.width - 2).Render(b.String())
 }
 
 // permPromptView 渲染权限确认框：待确认的工具调用 + 原因 + 按键提示。

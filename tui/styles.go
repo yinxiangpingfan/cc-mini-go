@@ -40,4 +40,14 @@ var (
 			Padding(0, 1)
 	permTitleStyle = lipgloss.NewStyle().Foreground(colorRetry).Bold(true)
 	permKeyStyle   = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
+
+	// 计划面板：青色边框常驻输入框上方，按状态分色显示任务。
+	planBorderStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(colorAccent).
+			Padding(0, 1)
+	planTitleStyle   = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
+	planDoneStyle    = lipgloss.NewStyle().Foreground(colorDone).Strikethrough(true) // 完成：绿+删除线
+	planActiveStyle  = lipgloss.NewStyle().Foreground(colorRetry).Bold(true)         // 进行中：黄+加粗
+	planPendingStyle = lipgloss.NewStyle().Foreground(colorSubtle)                   // 待办：暗灰
 )
