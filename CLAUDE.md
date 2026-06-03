@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `cc-mini-go` is a **zero-third-party-dependency** Code Agent framework built entirely on the Go standard library, compatible with the OpenAI ChatCompletion protocol (`/chat/completions`). The **core** `go.mod` must stay dependency-free — use only stdlib (`net/http`, `encoding/json`, `sync`, `bufio`, `log/slog`, etc.). Do not add external modules to the core.
 
-This is a teaching codebase that incrementally implements a coding agent across chapters s00–s19 (tool calling → planning → subagents → skills → context compaction → permission → hooks → memory → …). Each chapter typically adds one tool or subsystem plus its tests. Implemented through **s09 (cross-session memory)** so far.
+This is a teaching codebase that incrementally implements a coding agent across chapters s00–s19 (tool calling → planning → subagents → skills → context compaction → permission → hooks → memory → system-prompt pipeline → …). Each chapter typically adds one tool or subsystem plus its tests. Implemented through **s10 (system-prompt assembly pipeline)** so far.
 
 ### Two-module layout
 
@@ -57,12 +57,21 @@ Two near-identical loops, `agent/agent.go` (`Agent`, non-streaming) and `agent/a
 
 1. Copy the incoming `[]any` history (heterogeneous message slice); never mutate the caller's slice.
 2. `ToolInit(&tools)` registers every tool into a `map[string]agent_tools.ToolFunc` and returns the parallel `[]client.Tool` schema list.
-3. **Augment the system prompt**: `withSkillCatalog` (skill catalog) then `withMemory` (cross-session memory). A plan `<reminder>` is injected once the plan-reminder counter crosses its threshold.
+3. **Assemble the system prompt** via the `buildSystemPrompt` pipeline (see below). A plan `<reminder>` is injected separately, per-round, once the plan-reminder counter crosses its threshold.
 4. Fire the `SessionStart` hook exactly once (`sync.Once`), since the loop re-enters per user message.
 5. Apply a microcompact time-gate on the first turn when the session has been idle past the threshold; keep flushing the session transcript to disk.
 6. Loop: call LLM (with retry, see `agent/retry.go`) → if `tool_calls` present, append the assistant message, run all tool funcs **concurrently** (`sync.WaitGroup` + `sync.Mutex` guarding `allMsg`) through `execToolWithHooks`, append each `role:"tool"` result (plus any image/injected messages), repeat. → if no tool calls, return.
 
 Tool functions run in goroutines **without recover**, so a panic in any tool crashes the whole process — tool code must never panic (always use comma-ok type assertions on `args`).
+
+### System-prompt assembly pipeline (`agent/system_prompt.go`, s10)
+
+The system prompt is not one hardcoded string but a **segmented pipeline**. `buildSystemPrompt(core)` joins non-empty sections (`joinNonEmpty`) in order:
+
+- **static block** (relatively stable, cache-friendly): `core` (passed in by the caller, usually `prompt.SystemPrompt`) + `sectionSkills` (skill catalog) + `sectionMemory` (memory bodies) + `sectionClaudeMD` (layered CLAUDE.md).
+- a `=== DYNAMIC CONTEXT ===` boundary marker (`prompt.DynamicContextHeader`), then the **dynamic block** (`sectionDynamic`): date / cwd / model / permission mode — anything that changes between turns.
+
+Notes: **tools are not inlined into the prompt** — they ride the OpenAI `tools` field (`ToolInit`'s `[]client.Tool`), so re-listing them as text would only waste tokens. `sectionClaudeMD` reads layered CLAUDE.md and **stacks** (does not override): user global `~/.cc_mini_go/CLAUDE.md` → project `<cwd>/CLAUDE.md`. Each section returns "" when its source is empty and is skipped. Per-round `<reminder>`s (e.g. the plan reminder) stay on a **separate channel** — they are not baked into this relatively-stable prompt.
 
 ### `execToolWithHooks` — the per-tool gauntlet (`agent/hook.go`)
 

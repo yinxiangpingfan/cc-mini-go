@@ -115,6 +115,13 @@ var DeleteMemoryPrompt = `"Delete a stored memory by name when it has become wro
 // MemoryHeader 是注入 system prompt 的记忆段落标题。
 var MemoryHeader = "Memory (persistent context from earlier sessions; treat as direction, and verify against the live repo before relying on specific paths/names):"
 
+// ClaudeMDHeader 是注入 system prompt 的 CLAUDE.md 指令段落标题。
+// 多层来源（用户全局 → 项目）按顺序叠加，不互相覆盖。
+var ClaudeMDHeader = "Project & user instructions (from CLAUDE.md, layered user → project; follow them):"
+
+// DynamicContextHeader 是静态/动态分界标记。它没有魔力，只提醒：上面相对稳定，下面每轮都可能变。
+var DynamicContextHeader = "=== DYNAMIC CONTEXT (everything below changes between turns) ==="
+
 // CompactPrompt 是 compact 工具的描述（手动触发一次完整压缩）
 var CompactPrompt = `"Summarize the earlier conversation so work can continue in a smaller context. "
         "Use this when the conversation has grown long and old details are no longer needed in full. "
