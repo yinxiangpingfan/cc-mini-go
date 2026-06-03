@@ -63,9 +63,10 @@ func run() error {
 		agent.WithBuiltinHooks(), // 内置 hook：会话欢迎语 + 工具审计（逻辑都在 agent/hooks_builtin.go）
 	)
 
-	// 4. 启动 Bubble Tea。用指针 model 以便后台 goroutine 拿到 program 句柄。
+	// 4. 启动 Bubble Tea。不用 alt-screen、不捕获鼠标：transcript 走终端原生回滚区，
+	//    从而保留原生滚轮滚动与拖拽框选复制（已结束的轮次由 finishTurn 用 tea.Println 刷入）。
 	m := newModel(ag, cm, events, cf.Model, perms)
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(m)
 	m.program = p
 	ap.setProgram(p) // program 就绪后注入 approver，打破构造环
 

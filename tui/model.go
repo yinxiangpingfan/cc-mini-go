@@ -9,7 +9,6 @@ import (
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/yinxiangpingfan/cc-mini-go/agent"
@@ -74,9 +73,8 @@ type model struct {
 	model   string
 	perms   *core.PermissionEngine // 权限引擎；Shift+Tab 切换模式，帮助行展示当前模式
 
-	input    textarea.Model
-	viewport viewport.Model
-	spinner  spinner.Model
+	input   textarea.Model
+	spinner spinner.Model
 
 	width, height int
 	ready         bool
@@ -164,38 +162,23 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 
-	case tea.MouseMsg:
-		// 鼠标滚轮交给 viewport 处理（滚动 transcript）
-		if m.ready {
-			var cmd tea.Cmd
-			m.viewport, cmd = m.viewport.Update(msg)
-			return m, cmd
-		}
-		return m, nil
-
 	case agent.AgentEvent:
 		m.applyEvent(msg)
-		m.refreshViewport()
 		return m, m.waitEvent()
 
 	case permissionAskMsg:
 		// 经 program.Send 注入：进入等待确认状态，渲染 y/n 提示框。
 		m.pendingPerm = &msg
-		m.refreshViewport()
 		return m, nil
 
 	case doneMsg:
-		m.finishTurn(msg)
-		m.refreshViewport()
-		return m, nil
+		// 收尾并把本轮 transcript 刷入终端原生回滚区（返回的 tea.Println 命令负责打印）
+		return m, m.finishTurn(msg)
 
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
-		if m.running {
-			m.refreshViewport() // 让底部计时 / spinner / 重试倒计时持续刷新
-		}
-		return m, cmd
+		return m, cmd // View 每帧重算，底部计时/spinner 随之刷新
 	}
 
 	if !m.running {
@@ -248,13 +231,12 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case "ctrl+l":
-		// 清屏：清空可见 transcript，保留对话历史（m.history 不动）
+		// 清屏：清掉可见屏幕与本轮 live 区，对话历史（m.history）与回滚区不动
 		m.entries = nil
 		m.curAsstIdx = -1
 		m.curThinkIdx = -1
 		m.toolIdx = make(map[string]int)
-		m.refreshViewport()
-		return m, nil
+		return m, tea.ClearScreen
 
 	case "ctrl+o":
 		// 切换详细输出（思考 + 完整工具参数）
@@ -316,12 +298,6 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m.send()
 
-	case "pgup":
-		m.viewport.HalfPageUp()
-		return m, nil
-	case "pgdown":
-		m.viewport.HalfPageDown()
-		return m, nil
 	}
 
 	if !m.running {
@@ -434,8 +410,6 @@ func (m *model) send() (tea.Model, tea.Cmd) {
 		m.program.Send(doneMsg{messages: msgs, err: err})
 	}()
 
-	m.refreshViewport()
-	m.viewport.GotoBottom() // 发新消息时主动滚到底，展示本轮
 	return m, nil
 }
 
@@ -593,8 +567,9 @@ func (m *model) hasActivePlan() bool {
 	return false
 }
 
-// finishTurn 收尾一轮：提交历史、追加计时/错误条目、清状态。
-func (m *model) finishTurn(msg doneMsg) {
+// finishTurn 收尾一轮：提交历史、追加计时/错误条目、清状态，
+// 并把本轮全部条目刷入终端原生回滚区（返回的 tea.Println 命令负责打印），随后清空 live 区。
+func (m *model) finishTurn(msg doneMsg) tea.Cmd {
 	m.running = false
 	m.cancel = nil
 	m.retrying = false
@@ -627,4 +602,15 @@ func (m *model) finishTurn(msg doneMsg) {
 			text: workWords[m.workWord].ed + " for " + secs(elapsed),
 		})
 	}
+
+	// 本轮 transcript 刷入回滚区（此时 running 已为 false，renderTranscript 不含底部工作行），
+	// 再清空 live 区——下一帧 View 只剩计划面板与输入框。
+	out := m.renderTranscript(m.width)
+	m.entries = nil
+	m.curAsstIdx = -1
+	m.curThinkIdx = -1
+	if strings.TrimSpace(out) == "" {
+		return nil
+	}
+	return tea.Println(out)
 }

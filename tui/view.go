@@ -8,48 +8,21 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/lipgloss"
 )
 
-// resize 根据终端尺寸重排：transcript 占主区，输入框 + 帮助行固定在底部。
+// resize 记录终端尺寸并调整输入框宽度。内联渲染下没有 viewport，布局由 View 每帧重算。
 func (m *model) resize(w, h int) {
 	m.width, m.height = w, h
-	if !m.ready {
-		m.viewport = viewport.New(w, 1)
-		m.ready = true
-	}
-	m.relayout()
-	m.refreshViewport()
+	m.ready = true
+	m.input.SetWidth(w - 2)
 }
 
-// relayout 按当前输入框高度重算 viewport 尺寸（输入框增高时调用）。
-func (m *model) relayout() {
-	if !m.ready {
-		return
-	}
-	// 垂直预算：计划面板 + 输入块(input 高度 + 边框2) + 帮助行(1)
-	vpHeight := m.height - m.planPanelHeight() - (m.input.Height() + 2) - 1
-	if vpHeight < 1 {
-		vpHeight = 1
-	}
-	m.viewport.Width = m.width
-	m.viewport.Height = vpHeight
-	m.input.SetWidth(m.width - 2)
-}
+// relayout 旧 viewport 布局的遗留入口；内联渲染下无需重算尺寸，留作空操作以兼容调用点。
+func (m *model) relayout() {}
 
-// refreshViewport 重建 transcript 内容；仅当用户本就停在底部时才跟随到底，
-// 这样生成中向上滚动查看历史不会被强行拽回（修复「一直聚焦最下方」）。
-func (m *model) refreshViewport() {
-	if !m.ready {
-		return
-	}
-	atBottom := m.viewport.AtBottom()
-	m.viewport.SetContent(m.renderTranscript(m.viewport.Width))
-	if atBottom {
-		m.viewport.GotoBottom()
-	}
-}
+// refreshViewport 旧 viewport 的内容刷新入口；内联渲染下 View 每次 Update 后自动重算，空操作。
+func (m *model) refreshViewport() {}
 
 // renderTranscript 把所有条目 + 底部工作行渲染成可滚动文本。
 func (m *model) renderTranscript(width int) string {
@@ -129,8 +102,12 @@ func (m *model) View() string {
 	if !m.ready {
 		return "正在初始化…"
 	}
-	// 计划面板（若有未完成计划）常驻在 viewport 与输入区之间。
-	parts := []string{m.viewport.View()}
+	// 内联渲染：已结束的轮次已 Println 进终端原生回滚区（可原生滚动 / 框选复制），
+	// 这里只画 live 区——本轮进行中的 transcript（含底部工作行）+ 计划面板 + 输入区。
+	var parts []string
+	if body := m.renderTranscript(m.width); body != "" {
+		parts = append(parts, body)
+	}
 	if panel := m.planPanelView(); panel != "" {
 		parts = append(parts, panel)
 	}
@@ -164,15 +141,6 @@ func planStyleFor(status string) lipgloss.Style {
 	default:
 		return planPendingStyle
 	}
-}
-
-// planPanelHeight 计划面板占的行数（含边框）；无活动计划时为 0。
-// 必须与 planPanelView 的实际渲染行数一致，否则 viewport 高度算错。
-func (m *model) planPanelHeight() int {
-	if !m.hasActivePlan() {
-		return 0
-	}
-	return len(m.plan) + 1 + 2 // 标题 1 行 + 任务行 + 边框 2 行
 }
 
 // planPanelView 渲染计划面板：标题 + 每个任务一行（按状态分色）。无活动计划时返回空串。
@@ -220,7 +188,7 @@ func (m *model) helpLine() string {
 		mode = "[" + modeLabel(m.perms.Mode()) + "] "
 	}
 	if m.running {
-		return mode + "ctrl+c 中断 · shift+tab 模式 · ctrl+o 详细 · 滚轮 滚动"
+		return mode + "ctrl+c 中断 · shift+tab 模式 · ctrl+o 详细"
 	}
 	return mode + `enter 发送 · \+enter 换行 · shift+tab 模式 · ctrl+o 详细 · ctrl+l 清屏 · ctrl+c 退出`
 }
