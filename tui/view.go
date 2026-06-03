@@ -10,38 +10,43 @@ import (
 
 	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/lipgloss"
-
-	"github.com/yinxiangpingfan/cc-mini-go/agent"
 )
 
 // resize 根据终端尺寸重排：transcript 占主区，输入框 + 帮助行固定在底部。
 func (m *model) resize(w, h int) {
 	m.width, m.height = w, h
-
-	// 垂直预算：输入块(inputHeight + 边框2) + 帮助行(1)
-	vpHeight := h - (inputHeight + 2) - 1
-	if vpHeight < 1 {
-		vpHeight = 1
-	}
 	if !m.ready {
-		m.viewport = viewport.New(w, vpHeight)
+		m.viewport = viewport.New(w, 1)
 		m.ready = true
-	} else {
-		m.viewport.Width = w
-		m.viewport.Height = vpHeight
 	}
-	m.input.SetWidth(w - 2)
+	m.relayout()
 	m.refreshViewport()
 }
 
-// refreshViewport 重建 transcript 内容并在运行中自动滚到底部。
+// relayout 按当前输入框高度重算 viewport 尺寸（输入框增高时调用）。
+func (m *model) relayout() {
+	if !m.ready {
+		return
+	}
+	// 垂直预算：输入块(input 高度 + 边框2) + 帮助行(1)
+	vpHeight := m.height - (m.input.Height() + 2) - 1
+	if vpHeight < 1 {
+		vpHeight = 1
+	}
+	m.viewport.Width = m.width
+	m.viewport.Height = vpHeight
+	m.input.SetWidth(m.width - 2)
+}
+
+// refreshViewport 重建 transcript 内容；仅当用户本就停在底部时才跟随到底，
+// 这样生成中向上滚动查看历史不会被强行拽回（修复「一直聚焦最下方」）。
 func (m *model) refreshViewport() {
 	if !m.ready {
 		return
 	}
 	atBottom := m.viewport.AtBottom()
 	m.viewport.SetContent(m.renderTranscript(m.viewport.Width))
-	if m.running || atBottom {
+	if atBottom {
 		m.viewport.GotoBottom()
 	}
 }
@@ -67,7 +72,7 @@ func (m *model) renderTranscript(width int) string {
 			b.WriteString("\n\n")
 
 		case entryThinking:
-			if m.showThink {
+			if m.verbose {
 				b.WriteString(thinkStyle.Render("✶ thinking"))
 				b.WriteString("\n")
 				b.WriteString(indent.Render(thinkStyle.Render(e.text)))
@@ -79,7 +84,12 @@ func (m *model) renderTranscript(width int) string {
 			if e.toolDone {
 				mark = toolDoneStyle.Render("●")
 			}
-			b.WriteString(mark + " " + toolStyle.Render(toolDescriptor(e.toolName, e.toolArgs)))
+			// 详细模式下展示更完整的参数
+			argLimit := 72
+			if m.verbose {
+				argLimit = 200
+			}
+			b.WriteString(mark + " " + toolStyle.Render(toolDescriptor(e.toolName, e.toolArgs, argLimit)))
 			b.WriteString("\n")
 			if e.toolDone && e.text != "" {
 				b.WriteString(helpStyle.Render("  ⎿ " + e.text))
@@ -97,10 +107,10 @@ func (m *model) renderTranscript(width int) string {
 		}
 	}
 
-	// 底部工作行：重试提示优先，否则显示拟人化计时 spinner
+	// 底部工作行：重试倒计时优先，否则显示拟人化计时 spinner
 	if m.running {
-		if m.retry != "" {
-			b.WriteString(m.spinner.View() + " " + retryStyle.Render(m.retry))
+		if m.retrying {
+			b.WriteString(m.spinner.View() + " " + retryStyle.Render(m.retryCountdown()))
 		} else {
 			elapsed := int(time.Since(m.startTime).Seconds())
 			label := fmt.Sprintf("%s… (%s · ctrl+c 中断)", workWords[m.workWord].ing, secs(elapsed))
@@ -125,15 +135,15 @@ func (m *model) View() string {
 
 func (m *model) helpLine() string {
 	if m.running {
-		return "ctrl+c 中断 · ctrl+t 思考 · pgup/pgdn 滚动"
+		return "ctrl+c 中断 · ctrl+o 详细 · 滚轮/pgup/pgdn 滚动"
 	}
-	return "enter 发送 · ctrl+j 换行 · ctrl+t 思考 · pgup/pgdn 滚动 · ctrl+c 退出"
+	return `enter 发送 · \+enter/ctrl+j 换行 · ctrl+o 详细 · ctrl+l 清屏 · ctrl+c 退出 · 滚轮 滚动`
 }
 
 // ---- 渲染辅助 ----
 
 // toolDescriptor 把工具名 + 原始参数 JSON 压成一行可读描述，如 bash(go build ./...)。
-func toolDescriptor(name, argsJSON string) string {
+func toolDescriptor(name, argsJSON string, limit int) string {
 	var args map[string]any
 	_ = json.Unmarshal([]byte(argsJSON), &args)
 
@@ -157,7 +167,7 @@ func toolDescriptor(name, argsJSON string) string {
 	if key == "" || key == "{}" {
 		return name
 	}
-	return fmt.Sprintf("%s(%s)", name, truncate(key, 72))
+	return fmt.Sprintf("%s(%s)", name, truncate(key, limit))
 }
 
 // toolResultPreview 把工具结果 JSON 压成一行预览：错误高亮，正文取首行。
@@ -178,9 +188,15 @@ func toolResultPreview(s string) string {
 	return oneLine(s)
 }
 
-// retryLine 组装重试提示文案。
-func retryLine(ev agent.AgentEvent) string {
-	return fmt.Sprintf("重试 %d/%d，%.1fs 后（%v）", ev.Attempt, ev.Max, ev.Delay.Seconds(), ev.Err)
+// retryCountdown 按 retryUntil 实时算剩余秒，做成逐秒跳动的倒计时；归零后显示「重连中…」。
+func (m *model) retryCountdown() string {
+	remain := time.Until(m.retryUntil)
+	if remain <= 0 {
+		return fmt.Sprintf("重试 %d/%d，重连中…", m.retryAttempt, m.retryMax)
+	}
+	// 向上取整：剩 2.3s 显示 3s，逐秒 3→2→1
+	left := int((remain + time.Second - 1) / time.Second)
+	return fmt.Sprintf("重试 %d/%d，%s 后重连", m.retryAttempt, m.retryMax, secs(left))
 }
 
 func oneLine(s string) string {

@@ -55,7 +55,7 @@ func run() error {
 
 	// 4. 启动 Bubble Tea。用指针 model 以便后台 goroutine 拿到 program 句柄。
 	m := newModel(ag, cm, events, cf.Model)
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	m.program = p
 
 	_, err = p.Run()
