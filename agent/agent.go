@@ -75,6 +75,8 @@ func (a *ChatCompletionAgent) Agent(ctx context.Context, messages []any, system 
 	clientTool := a.ToolInit(&tools)
 	//把 skill 目录拼进 system prompt（轻量发现层）
 	system = a.withSkillCatalog(system)
+	//把跨会话记忆拼进 system prompt（读取层）
+	system = a.withMemory(system)
 	//上下文压缩状态（跨轮）
 	compactState := agent_tools.NewCompactState()
 	//会话转录：整段对话持续以 jsonl 落盘，与压缩解耦

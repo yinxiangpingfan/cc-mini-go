@@ -444,6 +444,9 @@ func (m *model) applyEvent(ev agent.AgentEvent) {
 		if ev.ToolName == "todo_list" {
 			m.updatePlan(ev.Text) // 同步常驻计划面板
 		}
+		if ev.ToolName == "save_memory" {
+			m.noteMemorySaved(ev.Text) // 让「记住了什么」对用户透明
+		}
 
 	case agent.EventRetry:
 		// 记录倒计时基准；render 时按 retryUntil 实时算剩余秒，逐秒跳动
@@ -555,6 +558,21 @@ func (m *model) updatePlan(toolResult string) {
 		m.plan = res.Todos
 		m.relayout() // 面板高度变化 → 重排 viewport
 	}
+}
+
+// noteMemorySaved 在 save_memory 成功后插入一条「已记住」通知，让记忆对用户透明。
+// 解析失败或是错误结果（无 saved 字段）时静默跳过，不打扰。
+func (m *model) noteMemorySaved(toolResult string) {
+	var r struct {
+		Saved string `json:"saved"`
+		Type  string `json:"type"`
+	}
+	if json.Unmarshal([]byte(toolResult), &r) != nil || r.Saved == "" {
+		return
+	}
+	m.curAsstIdx = -1 // 通知后若再有正文，另起一块
+	m.curThinkIdx = -1
+	m.entries = append(m.entries, entry{kind: entryNotice, text: "🧠 已记住:" + r.Saved + "（" + r.Type + "）"})
 }
 
 // hasActivePlan 是否有需要展示的计划：存在且尚有未完成项（全完成则收起面板）。

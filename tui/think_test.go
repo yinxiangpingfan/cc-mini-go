@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // newParseModel 造一个仅够测试流式解析的 model（定位下标初始为「需新开块」）。
 func newParseModel() *model {
@@ -102,4 +105,29 @@ func TestHasActivePlan_AllCompleted(t *testing.T) {
 	if m.hasActivePlan() {
 		t.Fatal("all-completed plan should collapse the panel")
 	}
+}
+
+// save_memory 成功结果生成一条「已记住」通知；错误结果不打扰。
+func TestNoteMemorySaved(t *testing.T) {
+	m := newParseModel()
+	m.noteMemorySaved(`{"saved":"prefer-tabs","type":"user","path":"/x/prefer-tabs.md"}`)
+	got := m.textByKind(entryNotice)
+	if !strings.Contains(got, "prefer-tabs") || !strings.Contains(got, "user") {
+		t.Fatalf("notice = %q, want it to mention name + type", got)
+	}
+
+	m.noteMemorySaved(`{"error":"boom"}`) // 错误结果不应再追加通知
+	if c := countByKind(m, entryNotice); c != 1 {
+		t.Fatalf("error result should not add a notice, got %d notices", c)
+	}
+}
+
+func countByKind(m *model, k entryKind) int {
+	n := 0
+	for _, e := range m.entries {
+		if e.kind == k {
+			n++
+		}
+	}
+	return n
 }

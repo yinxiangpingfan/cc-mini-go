@@ -49,4 +49,14 @@ var (
 	ErrInvalidGlobPattern = fmt.Errorf("invalid glob pattern")
 	// ErrSearchPath 搜索路径无法访问
 	ErrSearchPath = fmt.Errorf("cannot access search path")
+	// ErrMemoryInvalidType memory 的 type 不在白名单内，使用时 fmt.Sprintf(ErrMemoryInvalidType, type, validList)
+	ErrMemoryInvalidType = "invalid memory type '%s'. valid types: %s"
+	// ErrMemoryEmptyName memory 名经过清洗后为空
+	ErrMemoryEmptyName = fmt.Errorf("memory name is empty after sanitization")
+	// ErrMemoryWrite 写入 memory 文件失败
+	ErrMemoryWrite = fmt.Errorf("write memory failed")
+	// ErrMemoryNotExist 要删除的 memory 不存在，使用时 fmt.Sprintf(ErrMemoryNotExist, name, knownList)
+	ErrMemoryNotExist = "memory '%s' does not exist. known memories: %s"
+	// ErrMemoryDelete 删除 memory 文件失败
+	ErrMemoryDelete = fmt.Errorf("delete memory failed")
 )

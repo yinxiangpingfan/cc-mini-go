@@ -93,6 +93,28 @@ var LoadSkillPrompt = `"Load the full body of a named skill into the current con
 // SkillCatalogHeader 是注入 system prompt 的 skill 目录段落标题
 var SkillCatalogHeader = "Skills available (call load_skill to load the full instructions before acting):"
 
+// SaveMemoryPrompt 是 save_memory 工具的描述。它同时承载 s09 的存储边界——
+// 「该存什么 / 不该存什么」不是用代码强制的，而是写在这里由模型遵守。
+var SaveMemoryPrompt = `"Persist a fact across sessions so future sessions start informed.\n\n"
+        "Save ONLY information that stays valuable in later sessions AND is not easily re-derivable "
+        "from the current repository state. Pick a type:\n"
+        " - user: long-term user preferences (code style, verbosity, preferred tooling)\n"
+        " - feedback: corrections or approaches the user has explicitly endorsed (include the why)\n"
+        " - project: non-obvious project conventions or background (e.g. a decision driven by compliance, "
+        "a dir that looks stale but must not be touched)\n"
+        " - reference: pointers to external resources (dashboards, tickets, URLs)\n\n"
+        "Do NOT save: code structure or file/function locations, current task progress, branch names "
+        "or PR numbers, bug-fix code details, or any secrets/credentials — these are better read live "
+        "from the code, task list, or git history, and quickly go stale. "
+        "Reusing an existing name overwrites that memory."`
+
+// DeleteMemoryPrompt 是 delete_memory 工具的描述。
+var DeleteMemoryPrompt = `"Delete a stored memory by name when it has become wrong or obsolete. "
+        "Use the exact name shown in the memory section."`
+
+// MemoryHeader 是注入 system prompt 的记忆段落标题。
+var MemoryHeader = "Memory (persistent context from earlier sessions; treat as direction, and verify against the live repo before relying on specific paths/names):"
+
 // CompactPrompt 是 compact 工具的描述（手动触发一次完整压缩）
 var CompactPrompt = `"Summarize the earlier conversation so work can continue in a smaller context. "
         "Use this when the conversation has grown long and old details are no longer needed in full. "
