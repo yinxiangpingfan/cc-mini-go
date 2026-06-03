@@ -28,6 +28,8 @@ func (a *ChatCompletionAgent) StreamAgent(ctx context.Context, messages []any, s
 	transcript := agent_tools.NewSessionTranscript()
 	//任意返回路径都把最后的消息补写入转录
 	defer func() { _ = transcript.Flush(allMsg) }()
+	//记录本次对话结束时刻，供下次 microcompact 时间闸判定
+	defer a.markActivity()
 
 	//定义回调函数
 	activeToolCalls := make(map[int]*client.StreamToolCall) // 当前存在的 ToolCalls
@@ -106,8 +108,12 @@ func (a *ChatCompletionAgent) StreamAgent(ctx context.Context, messages []any, s
 
 		// 持续把本轮之前新增的消息落盘（压缩前先写，保住完整历史）
 		_ = transcript.Flush(allMsg)
-		// 上下文压缩：先微压缩旧工具结果，再判断整体是否过大需要完整压缩
-		allMsg = agent_tools.MicroCompact(allMsg)
+		// microcompact 时间闸：仅在「跨轮空闲超阈值」时于首轮压一次旧工具结果；
+		// 活跃会话内（轮间秒级）不压——对齐源码，避免读 6 个文件就清掉第 1 个
+		if turn == 0 && a.microcompactArmed() {
+			allMsg = agent_tools.MicroCompact(allMsg)
+		}
+		// 整体过大才做完整压缩（按体积，每轮判断）
 		if agent_tools.EstimateContextSize(allMsg) > agent_tools.ContextLimit {
 			allMsg = agent_tools.CompactHistory(ctx, a.call, a.cf.Model, allMsg, compactState, "")
 		}

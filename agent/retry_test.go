@@ -106,6 +106,35 @@ func TestEmit_DeliversThenDropsWhenFull(t *testing.T) {
 	}
 }
 
+// ---------- microcompact 时间闸 ----------
+
+func TestMicrocompactArmed_TimeGate(t *testing.T) {
+	a := &ChatCompletionAgent{}
+
+	// 首次调用（无上次活动）：不触发
+	if a.microcompactArmed() {
+		t.Fatal("first-ever call should not arm microcompact")
+	}
+
+	// 刚活动过（gap≈0 < 60min）：不触发
+	a.lastActivityAt = time.Now()
+	if a.microcompactArmed() {
+		t.Fatal("active session (tiny gap) should not arm microcompact")
+	}
+
+	// 空闲超过阈值：触发
+	a.lastActivityAt = time.Now().Add(-2 * time.Hour)
+	if !a.microcompactArmed() {
+		t.Fatal("idle gap beyond GapThreshold should arm microcompact")
+	}
+
+	// markActivity 应把基准刷新为现在，从而关闭闸门
+	a.markActivity()
+	if a.microcompactArmed() {
+		t.Fatal("markActivity should reset the gate (gap≈0)")
+	}
+}
+
 // ---------- isRetryableStatusCode ----------
 
 func TestIsRetryableStatusCode(t *testing.T) {

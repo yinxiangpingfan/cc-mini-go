@@ -43,6 +43,13 @@ const (
 	persistedPlaceholder = "[Earlier tool result compacted. Re-run the tool if you need full detail.]"
 )
 
+// GapThreshold 是 microcompact 的「时间闸」：距上次活动不足该时长则不触发——
+// prompt cache 大概率仍有效，活跃会话里不该清旧工具结果。只有空闲超过它（缓存多半已失效，
+// 反正这轮要全价重算未命中上下文）才顺手把可重新获取的旧结果压成占位。
+// 对齐源码 gapThresholdMinutes 默认 60min；用 var 以便测试调小。
+// 注意：它只决定「何时压」，压时留几个由 KeepRecentToolResults 决定，两者是不同的旋钮。
+var GapThreshold = 60 * time.Minute
+
 // sessionStorageDir 是本次会话的存储根，进程启动时确定一次，整个会话共用。
 // 布局：~/.cc_mini_go/projects/<项目>/<会话>/ —— 按项目、按会话分别隔离。
 // 落盘的大工具结果与转录都放在它下面；测试可覆盖该变量以隔离。

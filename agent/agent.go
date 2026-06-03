@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"sync"
+	"time"
 
 	"github.com/yinxiangpingfan/cc-mini-go/agent_tools"
 	"github.com/yinxiangpingfan/cc-mini-go/client"
@@ -15,6 +16,27 @@ type ChatCompletionAgent struct {
 	cf     *config.Config
 	call   *client.Call
 	events chan<- AgentEvent // 可选：向外广播进度事件（如重试），nil 表示不广播
+
+	mu             sync.Mutex // 保护 lastActivityAt（跨多次 Agent/StreamAgent 调用）
+	lastActivityAt time.Time  // 上次对话结束时刻，作为 microcompact 时间闸的基准
+}
+
+// microcompactArmed 时间闸：仅当距上次活动 >= GapThreshold（prompt cache 大概率已失效）
+// 才允许触发 microcompact。首次调用（无上次活动）不触发——本就没有旧结果可压。
+func (a *ChatCompletionAgent) microcompactArmed() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.lastActivityAt.IsZero() {
+		return false
+	}
+	return time.Since(a.lastActivityAt) >= agent_tools.GapThreshold
+}
+
+// markActivity 记录本次对话结束时刻，作为下次时间闸的基准。
+func (a *ChatCompletionAgent) markActivity() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.lastActivityAt = time.Now()
 }
 
 func NewChatCompletionAgent(cf *config.Config, call *client.Call, opts ...AgentOption) *ChatCompletionAgent {
@@ -44,6 +66,8 @@ func (a *ChatCompletionAgent) Agent(ctx context.Context, messages []any, system 
 	transcript := agent_tools.NewSessionTranscript()
 	//任意返回路径都把最后的消息补写入转录
 	defer func() { _ = transcript.Flush(allMsg) }()
+	//记录本次对话结束时刻，供下次 microcompact 时间闸判定
+	defer a.markActivity()
 
 	//开始请求LLM（带最大轮次保护，防止工具调用无限循环）
 	for turn := 0; turn < agentMaxTurns; turn++ {
@@ -53,8 +77,12 @@ func (a *ChatCompletionAgent) Agent(ctx context.Context, messages []any, system 
 		}
 		// 持续把本轮之前新增的消息落盘（压缩前先写，保住完整历史）
 		_ = transcript.Flush(allMsg)
-		// 上下文压缩：先微压缩旧工具结果，再判断整体是否过大需要完整压缩
-		allMsg = agent_tools.MicroCompact(allMsg)
+		// microcompact 时间闸：仅在「跨轮空闲超阈值」时于首轮压一次旧工具结果；
+		// 活跃会话内（轮间秒级）不压——对齐源码，避免读 6 个文件就清掉第 1 个
+		if turn == 0 && a.microcompactArmed() {
+			allMsg = agent_tools.MicroCompact(allMsg)
+		}
+		// 整体过大才做完整压缩（按体积，每轮判断）
 		if agent_tools.EstimateContextSize(allMsg) > agent_tools.ContextLimit {
 			allMsg = agent_tools.CompactHistory(ctx, a.call, a.cf.Model, allMsg, compactState, "")
 		}
