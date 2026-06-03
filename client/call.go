@@ -3,6 +3,7 @@ package client
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -23,27 +24,35 @@ func NewCall(cl *ChatCompletionClient, cm *ChatCompletionMessage, log *slog.Logg
 	}
 }
 
-// NewCallRequest creates a new call request to the OpenAI API.
+// NewCallRequest 不带 context 的版本，等价于使用 context.Background()，保留以兼容现有调用方。
 func (c *Call) NewCallRequest(model string, messages []any, stream bool, system string, tools []Tool, streamMessageFunc func(StreamResponse)) (CallResponse, *http.Response, error) {
+	return c.NewCallRequestCtx(context.Background(), model, messages, stream, system, tools, streamMessageFunc)
+}
+
+// NewCallRequestCtx 带 context 的请求：取消 ctx 会中断进行中的 HTTP 请求（含流式读取）。
+func (c *Call) NewCallRequestCtx(ctx context.Context, model string, messages []any, stream bool, system string, tools []Tool, streamMessageFunc func(StreamResponse)) (CallResponse, *http.Response, error) {
 	// If stream is true, use the newCallRequestWithStream method.
 	if stream {
-		return c.newCallRequestWithStream(model, messages, system, tools, streamMessageFunc)
+		return c.newCallRequestWithStream(ctx, model, messages, system, tools, streamMessageFunc)
 	}
 	allMsgs := make([]any, 0, 1+len(messages))
 	allMsgs = append(allMsgs, *c.Cm.NewSystemMessage(system))
 	reqBody := CallRequest{
-		Model:      model,
-		Messages:   append(allMsgs, messages...),
-		Stream:     stream,
-		Tools:      tools,
-		ToolChoice: "auto",
+		Model:    model,
+		Messages: append(allMsgs, messages...),
+		Stream:   stream,
+		Tools:    tools,
+	}
+	// 仅在确实提供了工具时设置 tool_choice，否则部分服务端会因 "tool_choice 但无 tools" 报错
+	if len(tools) > 0 {
+		reqBody.ToolChoice = "auto"
 	}
 	reqBodyJson, err := json.Marshal(reqBody)
 	if err != nil {
 		return CallResponse{}, nil, err
 	}
 
-	req, err := http.NewRequest("POST", c.cl.baseUrl+"/chat/completions", bytes.NewReader(reqBodyJson))
+	req, err := http.NewRequestWithContext(ctx, "POST", c.cl.baseUrl+"/chat/completions", bytes.NewReader(reqBodyJson))
 	if err != nil {
 		return CallResponse{}, nil, err
 	}
@@ -64,7 +73,7 @@ func (c *Call) NewCallRequest(model string, messages []any, stream bool, system 
 }
 
 // newCallRequestWithStream creates a new call request to the OpenAI API with streaming enabled.
-func (c *Call) newCallRequestWithStream(model string, messages []any, system string, tools []Tool, onMessage func(StreamResponse)) (CallResponse, *http.Response, error) {
+func (c *Call) newCallRequestWithStream(ctx context.Context, model string, messages []any, system string, tools []Tool, onMessage func(StreamResponse)) (CallResponse, *http.Response, error) {
 	type openaiReq struct {
 		Model    string `json:"model"`
 		Messages []any  `json:"messages"`
@@ -85,7 +94,7 @@ func (c *Call) newCallRequestWithStream(model string, messages []any, system str
 		return CallResponse{}, nil, err
 	}
 
-	req, err := http.NewRequest("POST", c.cl.baseUrl+"/chat/completions", bytes.NewReader(reqBodyJson))
+	req, err := http.NewRequestWithContext(ctx, "POST", c.cl.baseUrl+"/chat/completions", bytes.NewReader(reqBodyJson))
 	if err != nil {
 		return CallResponse{}, nil, err
 	}
@@ -116,6 +125,10 @@ func (c *Call) newCallRequestWithStream(model string, messages []any, system str
 		}
 		// 调用传入的回调函数处理流响应
 		onMessage(streamResp)
+	}
+	// 扫描结束：区分正常结束与读取错误（如 ctx 取消会让 Body 读取返回错误）
+	if err := scanner.Err(); err != nil {
+		return CallResponse{}, resp, err
 	}
 	return CallResponse{}, resp, nil
 }

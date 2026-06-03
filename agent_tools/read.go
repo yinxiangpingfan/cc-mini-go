@@ -2,10 +2,13 @@ package agent_tools
 
 import (
 	"bufio"
+	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -14,6 +17,75 @@ import (
 	"github.com/yinxiangpingfan/cc-mini-go/prompt"
 	"github.com/yinxiangpingfan/cc-mini-go/tools"
 )
+
+// imageExtensions 支持以多模态方式读取的图片扩展名（光栅图）。
+var imageExtensions = map[string]bool{
+	"png": true, "jpg": true, "jpeg": true, "gif": true, "webp": true, "bmp": true,
+}
+
+// imageExt 若 path 是支持的图片，返回小写扩展名（不含点）与 true。
+func imageExt(path string) (string, bool) {
+	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(path), "."))
+	if imageExtensions[ext] {
+		return ext, true
+	}
+	return "", false
+}
+
+// imageToolResult 是图片类工具结果的载体：Content 给模型看的文字摘要，ImageURL 是 data URI。
+// 工具结果本身是字符串（ToolsMessage），图片真正以多模态 user 消息进上下文（见 SplitImageResult）。
+type imageToolResult struct {
+	Image    bool   `json:"__image__"`
+	Content  string `json:"content"`
+	ImageURL string `json:"image_url"`
+}
+
+// newImageResult 把图片摘要 + data URI 打包成工具结果字符串。
+func newImageResult(content, dataURI string) string {
+	b, _ := json.Marshal(imageToolResult{Image: true, Content: content, ImageURL: dataURI})
+	return string(b)
+}
+
+// SplitImageResult 解析工具结果：若是图片，返回(文字摘要, dataURI, true)；否则原样返回(res, "", false)。
+// agent 循环据此把图片 data URI 拆出来，作为独立的多模态 user 消息接在工具结果之后。
+func SplitImageResult(res string) (content, imageURI string, isImage bool) {
+	if !strings.Contains(res, `"__image__"`) {
+		return res, "", false
+	}
+	var r imageToolResult
+	if err := json.Unmarshal([]byte(res), &r); err != nil || !r.Image {
+		return res, "", false
+	}
+	return r.Content, r.ImageURL, true
+}
+
+// readImageFile 把图片读成 base64 data URI，封装成图片工具结果。
+func readImageFile(filePath, ext string) string {
+	info, err := os.Stat(filePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return jsonErr(fmt.Errorf("%w: %w", errors.ErrFileNotExist, err).Error())
+		}
+		return jsonErr(fmt.Errorf("%w: %w", errors.ErrReadFile, err).Error())
+	}
+	if info.IsDir() {
+		return jsonErr(fmt.Sprintf("%s is a directory, not a file", filePath))
+	}
+	if info.Size() > maxFileSize {
+		return jsonErr(fmt.Errorf("%w: size %d bytes exceeds limit %d bytes", errors.ErrFileTooLarge, info.Size(), maxFileSize).Error())
+	}
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return jsonErr(fmt.Errorf("%w: %w", errors.ErrReadFile, err).Error())
+	}
+	mediaType := "image/" + ext
+	if ext == "jpg" {
+		mediaType = "image/jpeg"
+	}
+	dataURI := "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(data)
+	content := fmt.Sprintf("[Image: %s (%s, %d bytes)]", filePath, mediaType, info.Size())
+	return newImageResult(content, dataURI)
+}
 
 type response struct {
 	Content      string `json:"content"`        // 带行号的内容 或 目录列表
@@ -107,25 +179,25 @@ func readFile(filePath string, offset int, limit int) (content string, totalLine
 func NewReadFile() *Tools {
 	return &Tools{
 		Name: "read_file",
-		Func: func(args map[string]interface{}) string {
+		Func: func(ctx context.Context, args map[string]interface{}) string {
 			//从args中获取工具的参数
 			filePath, exists := args["file_path"].(string)
 			if !exists {
 				return jsonErr(fmt.Sprintf(errors.ErrToolFunctionCall, "file_path"))
 			}
-			offset, exists := args["offset"].(int)
-			if !exists {
-				offset = 1
+			// 图片：读成 data URI，由 agent 循环转成多模态 user 消息让模型真正“看”到
+			if ext, ok := imageExt(filePath); ok {
+				return readImageFile(filePath, ext)
 			}
-			if offset < 1 {
-				offset = 1
+			// JSON 数字经 map[string]any 解码后是 float64，不能直接断言成 int，
+			// 否则 LLM 传的 offset/limit 会被忽略、永远用默认值。
+			offset := 1
+			if v, ok := asInt(args["offset"]); ok && v >= 1 {
+				offset = v
 			}
-			limit, exists := args["limit"].(int)
-			if !exists {
-				limit = 2000
-			}
-			if limit < 1 {
-				limit = 2000
+			limit := 2000
+			if v, ok := asInt(args["limit"]); ok && v >= 1 {
+				limit = v
 			}
 			res := response{}
 			var err error

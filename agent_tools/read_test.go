@@ -1,11 +1,96 @@
 package agent_tools
 
 import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// TestReadTool_Image：读图片应返回 data URI 的图片结果，供 agent 转成多模态 user 消息。
+func TestReadTool_Image(t *testing.T) {
+	tmp := t.TempDir()
+	f := filepath.Join(tmp, "pic.png")
+	raw := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3}
+	if err := os.WriteFile(f, raw, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := NewReadFile().Func(context.Background(), map[string]any{"file_path": f})
+	content, uri, isImage := SplitImageResult(out)
+	if !isImage {
+		t.Fatalf(".png should be read as image, got: %s", out)
+	}
+	if !strings.Contains(content, "[Image:") || !strings.Contains(content, "image/png") {
+		t.Fatalf("image summary should mention path and media type, got: %s", content)
+	}
+	want := "data:image/png;base64," + base64.StdEncoding.EncodeToString(raw)
+	if uri != want {
+		t.Fatalf("data URI mismatch\n got: %s\nwant: %s", uri, want)
+	}
+}
+
+// TestReadTool_JpgMediaType：.jpg 的媒体类型应规范成 image/jpeg。
+func TestReadTool_JpgMediaType(t *testing.T) {
+	tmp := t.TempDir()
+	f := filepath.Join(tmp, "photo.jpg")
+	if err := os.WriteFile(f, []byte{0xff, 0xd8, 0xff}, 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, uri, isImage := SplitImageResult(NewReadFile().Func(context.Background(), map[string]any{"file_path": f}))
+	if !isImage || !strings.HasPrefix(uri, "data:image/jpeg;base64,") {
+		t.Fatalf("jpg should map to image/jpeg, got isImage=%v uri prefix=%.30q", isImage, uri)
+	}
+}
+
+// TestSplitImageResult_NonImagePassthrough：普通工具结果原样透传，不误判为图片。
+func TestSplitImageResult_NonImagePassthrough(t *testing.T) {
+	res := `{"content":"hello","total_lines":3}`
+	content, uri, isImage := SplitImageResult(res)
+	if isImage || uri != "" || content != res {
+		t.Fatalf("non-image result must pass through unchanged, got content=%q uri=%q isImage=%v", content, uri, isImage)
+	}
+}
+
+// TestReadTool_FloatOffsetLimit 回归测试：LLM 传来的 offset/limit 经 JSON 解码是 float64，
+// 工具必须正确采纳而非回退默认值（曾因 args["offset"].(int) 断言失败导致参数被忽略）。
+func TestReadTool_FloatOffsetLimit(t *testing.T) {
+	tmp := t.TempDir()
+	f := filepath.Join(tmp, "lines.txt")
+	if err := os.WriteFile(f, []byte("a\nb\nc\nd\ne\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 模拟真实调用：参数是 float64（json 解码后的数字类型）
+	out := NewReadFile().Func(context.Background(), map[string]any{
+		"file_path": f,
+		"offset":    float64(2),
+		"limit":     float64(2),
+	})
+
+	var res response
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatalf("output not JSON: %v, raw: %s", err, out)
+	}
+	if res.StartLine != 2 {
+		t.Fatalf("offset=2 should start at line 2, got %d (float64 arg ignored?)", res.StartLine)
+	}
+	if res.EndLine != 3 {
+		t.Fatalf("offset=2 limit=2 should end at line 3, got %d", res.EndLine)
+	}
+	if !strings.Contains(res.Content, "2 | b") || !strings.Contains(res.Content, "3 | c") {
+		t.Fatalf("expected lines 2-3 (b,c), got: %s", res.Content)
+	}
+	if strings.Contains(res.Content, "1 | a") || strings.Contains(res.Content, "4 | d") {
+		t.Fatalf("offset/limit not respected, leaked out-of-range lines: %s", res.Content)
+	}
+	if !res.Truncated {
+		t.Fatalf("limit=2 over 5 lines should mark truncated, got false")
+	}
+}
 
 func TestReadFile_NormalFile(t *testing.T) {
 	// 创建临时文件

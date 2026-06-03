@@ -80,3 +80,70 @@ var ToDoListPrompt = `"Create or replace the task checklist shown to the user. "
         "Use when starting a multi-step task to track progress. "
         "Each item has a subject (brief imperative title) and an optional "
         "initial status (pending by default)."`
+
+var TaskPrompt = `"Run a subtask in a clean context and return a summary."`
+
+var SubAgentSystemPrompt = `"You are a coding subagent. Complete the given task using the available tools, then summarize your findings concisely."`
+
+var LoadSkillPrompt = `"Load the full body of a named skill into the current context. "
+        "Use this when a task needs specialized instructions before you act. "
+        "Only the skill catalog (names and descriptions) is visible by default; "
+        "call this tool to read the complete guidance for the skill you need."`
+
+// SkillCatalogHeader 是注入 system prompt 的 skill 目录段落标题
+var SkillCatalogHeader = "Skills available (call load_skill to load the full instructions before acting):"
+
+// CompactPrompt 是 compact 工具的描述（手动触发一次完整压缩）
+var CompactPrompt = `"Summarize the earlier conversation so work can continue in a smaller context. "
+        "Use this when the conversation has grown long and old details are no longer needed in full. "
+        "Optionally pass 'focus' to highlight what must be preserved for the next steps."`
+
+// CompactSummarySystemPrompt 是生成压缩摘要时给模型的系统提示
+var CompactSummarySystemPrompt = `You are a summarizer for a coding agent. Produce a compact but concrete summary so work can continue.`
+
+// CompactSummaryPromptPrefix 是生成压缩摘要时拼在对话 JSON 之前的指令
+var CompactSummaryPromptPrefix = `Summarize this coding-agent conversation so work can continue.
+Preserve:
+1. The current goal
+2. Important findings and decisions
+3. Files read or changed
+4. Remaining work
+5. User constraints and preferences
+Be compact but concrete.
+
+`
+
+// CompactNotice 是压缩后注入的单条 user 消息前缀，告诉模型历史已被压缩
+var CompactNotice = "This conversation was compacted so the agent can continue working."
+
+var EditFilePrompt = `"Performs exact string replacements in files.\n\n"
+        "Usage:\n"
+        "- You must use your Read tool at least once on the file before editing. "
+        "This tool will error if you attempt an edit without reading the file first, "
+        "or if the file changed on disk since you last read it.\n"
+        "- When editing text from Read tool output, preserve the exact indentation (tabs/spaces) "
+        "as it appears AFTER the line number prefix. Never include any part of the line number prefix.\n"
+        "- ALWAYS prefer editing existing files. Use the write_file tool only to create new files or for full rewrites.\n"
+        "- The edit will FAIL if old_string is not unique in the file. Either provide a larger string "
+        "with more surrounding context to make it unique, or set replace_all=true to change every instance.\n"
+        "- old_string and new_string must differ.\n"
+        "- Use replace_all to rename a string/variable across the whole file."`
+
+var GrepPrompt = `"A search tool for finding text in files using regular expressions.\n\n"
+        "Usage:\n"
+        "- Supports Go (RE2) regex syntax (e.g. \"log.*Error\", \"func\\s+\\w+\").\n"
+        "- 'path' may be a file or a directory (recursive). Defaults to the current directory.\n"
+        "- Filter files with the 'glob' parameter matched against the file name (e.g. \"*.go\").\n"
+        "- output_mode: \"files_with_matches\" (default) lists matching file paths; "
+        "\"content\" shows matching lines; \"count\" shows per-file match counts.\n"
+        "- Set \"-i\" for case-insensitive matching, \"-n\" to include line numbers in content mode (default true).\n"
+        "- Set multiline=true to let the pattern match across line boundaries (enables dot-all).\n"
+        "- Binary files and the .git directory are skipped. Results are capped by head_limit."`
+
+var GlobPrompt = `"Fast file pattern matching tool that works with any codebase size.\n\n"
+        "Usage:\n"
+        "- Supports glob patterns like \"**/*.go\" or \"src/**/*.ts\". A pattern without a slash "
+        "(e.g. \"*.go\") matches the file name at any depth.\n"
+        "- 'path' is the directory to search in; omit it to use the current working directory.\n"
+        "- Returns matching file paths sorted by modification time (newest first), relative to the search path.\n"
+        "- Use this when you need to find files by name patterns; use Grep to search file contents."`
