@@ -32,6 +32,25 @@ var (
 	maxRetryDelay = 32 * time.Second
 )
 
+// isContextTooLong 判断一个非可重试的错误是否是「上下文超过模型窗口」。
+// 这类错误退避重试无用（请求本身装不下），恢复路径是压缩历史后重试——交给外层 recovery 处理。
+// 413 状态本身就是强信号；否则按服务端常见错误文案匹配。
+func isContextTooLong(code int, text string) bool {
+	if code == http.StatusRequestEntityTooLarge { // 413
+		return true
+	}
+	t := strings.ToLower(text)
+	for _, marker := range []string{
+		"context_length_exceeded", "context length", "maximum context",
+		"too many tokens", "prompt is too long", "reduce the length", "reduce your prompt",
+	} {
+		if strings.Contains(t, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // isRetryableStatusCode 判断 HTTP 状态码是否值得重试。
 // 仅对限流(429)与服务端临时故障(5xx/408)重试；
 // 4xx 客户端错误（鉴权失败、请求非法等）属于确定性错误，直接失败不重试。
@@ -112,8 +131,15 @@ func (a *ChatCompletionAgent) callWithRetry(ctx context.Context, allMsg []any, s
 		// 先按状态码分类：拿到响应就以状态码为准（即使响应体解析失败）
 		if resp != nil && resp.StatusCode != 200 {
 			statusErr := fmt.Errorf(perrors.ErrHTTPStatusCode, resp.StatusCode)
+			if err != nil { // 带上响应体（错误说明），供分类与排查
+				statusErr = fmt.Errorf("%w: %v", statusErr, err)
+			}
 			if !isRetryableStatusCode(resp.StatusCode) {
-				return client.CallResponse{}, statusErr // 确定性错误，立即失败
+				// 上下文超长：转成可识别的哨兵错误，交外层压缩重试（退避重试无用）
+				if isContextTooLong(resp.StatusCode, statusErr.Error()) {
+					return client.CallResponse{}, fmt.Errorf("%w: %v", perrors.ErrContextTooLong, statusErr)
+				}
+				return client.CallResponse{}, statusErr // 其他确定性错误，立即失败
 			}
 			retryAfter = parseRetryAfter(resp.Header) // 限流/5xx：尊重服务端 Retry-After
 			lastErr = statusErr
@@ -163,7 +189,14 @@ func (a *ChatCompletionAgent) streamWithRetry(ctx context.Context, allMsg []any,
 		// 非 200：按状态码决定是否重试
 		if resp != nil && resp.StatusCode != 200 {
 			statusErr := fmt.Errorf(perrors.ErrHTTPStatusCode, resp.StatusCode)
+			if err != nil { // 带上响应体（错误说明），供分类与排查
+				statusErr = fmt.Errorf("%w: %v", statusErr, err)
+			}
 			if !isRetryableStatusCode(resp.StatusCode) {
+				// 上下文超长：转成可识别的哨兵错误，交外层压缩重试（退避重试无用）
+				if isContextTooLong(resp.StatusCode, statusErr.Error()) {
+					return fmt.Errorf("%w: %v", perrors.ErrContextTooLong, statusErr)
+				}
 				return statusErr
 			}
 			retryAfter = parseRetryAfter(resp.Header) // 限流/5xx：尊重服务端 Retry-After

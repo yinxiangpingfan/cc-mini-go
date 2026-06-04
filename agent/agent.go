@@ -11,6 +11,7 @@ import (
 	"github.com/yinxiangpingfan/cc-mini-go/client"
 	"github.com/yinxiangpingfan/cc-mini-go/config"
 	"github.com/yinxiangpingfan/cc-mini-go/errors"
+	"github.com/yinxiangpingfan/cc-mini-go/prompt"
 )
 
 type ChatCompletionAgent struct {
@@ -85,6 +86,8 @@ func (a *ChatCompletionAgent) Agent(ctx context.Context, messages []any, system 
 	defer a.markActivity()
 	//会话级 hook：整个会话仅首条消息触发一次（sessionOnce 守护）
 	a.fireSessionStart()
+	//错误恢复预算（续写 / 压缩重试），跨轮累计（s11）
+	var rec recoveryState
 
 	//开始请求LLM（带最大轮次保护，防止工具调用无限循环）
 	for turn := 0; turn < agentMaxTurns; turn++ {
@@ -123,6 +126,14 @@ func (a *ChatCompletionAgent) Agent(ctx context.Context, messages []any, system 
 		// LLM 调用：自动重试网络错误与限流/5xx，不可重试错误直接返回
 		res, err := a.callWithRetry(ctx, allMsg, system, clientTool)
 		if err != nil {
+			// 上下文超长：压缩历史后重试（退避重试无用），限额内 continue
+			if k, why := chooseRecovery("", err); k == recoveryCompact && rec.compactAttempts < maxCompactRecovery {
+				rec.compactAttempts++
+				a.noteRecovery("🗜 " + why + "，压缩后重试")
+				_ = transcript.Flush(allMsg)
+				allMsg = agent_tools.CompactHistory(ctx, a.call, a.cf.Model, allMsg, compactState, "")
+				continue
+			}
 			return allMsg, err
 		}
 		if len(res.Choices) == 0 {
@@ -137,6 +148,7 @@ func (a *ChatCompletionAgent) Agent(ctx context.Context, messages []any, system 
 		}
 		//处理工具调用
 		if len(res.Choices[0].Message.ToolCalls) > 0 {
+			rec.continueAttempts = 0 // 有工具调用=有进展，续写预算清零
 			//追加工具请求信息
 			allMsg = append(allMsg, *a.call.Cm.NewToolsCall(res.Choices[0].Message.Content, res.Choices[0].Message.ToolCalls))
 			//助手在调用工具的同时可能带文本，一并广播
@@ -186,10 +198,18 @@ func (a *ChatCompletionAgent) Agent(ctx context.Context, messages []any, system 
 				allMsg = agent_tools.CompactHistory(ctx, a.call, a.cf.Model, allMsg, compactState, compactFocus)
 			}
 		} else {
-			//没有工具调用，返回结果
-			if s, ok := res.Choices[0].Message.Content.(string); ok && s != "" {
+			//没有工具调用，本轮是最终文本
+			s, _ := res.Choices[0].Message.Content.(string)
+			if s != "" {
 				a.emit(AgentEvent{Type: EventContent, Text: s})
 				allMsg = append(allMsg, *a.call.Cm.NewAssistantMessage(s))
+			}
+			// 输出被截断（finish_reason==length）→ 续写：保留半截，追加续写提示再来一轮
+			if k, _ := chooseRecovery(res.Choices[0].FinishReason, nil); k == recoveryContinue && rec.continueAttempts < maxContinueAttempts {
+				rec.continueAttempts++
+				a.noteRecovery("↻ 输出被截断，续写中")
+				allMsg = append(allMsg, *a.call.Cm.NewUserMessage(prompt.ContinuationPrompt))
+				continue
 			}
 			return allMsg, nil
 		}

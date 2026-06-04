@@ -455,8 +455,8 @@ func (m *model) applyEvent(ev agent.AgentEvent) {
 		m.retryAttempt = ev.Attempt
 		m.retryMax = ev.Max
 
-	case agent.EventPermissionHint, agent.EventHookNotice:
-		// 系统通知（连续被拒提示 / hook 提示）：插入 transcript，并让后续正文另起一块
+	case agent.EventPermissionHint, agent.EventHookNotice, agent.EventRecovery:
+		// 系统通知（连续被拒提示 / hook 提示 / 错误恢复）：插入 transcript，并让后续正文另起一块
 		m.curAsstIdx = -1
 		m.curThinkIdx = -1
 		m.entries = append(m.entries, entry{kind: entryNotice, text: ev.Text})

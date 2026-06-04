@@ -38,11 +38,16 @@ func (r *SubAgentRunner) run(ctx context.Context, taskPrompt string) string {
 			return jsonErr(ctx.Err().Error())
 		}
 		res, resp, err := r.call.NewCallRequestCtx(ctx, r.model, subMessages, false, r.system, childTools, nil)
+		// 状态码优先：非 200 时 err 携带的是错误响应体，先报状态码再附上正文
+		if resp != nil && resp.StatusCode != 200 {
+			msg := fmt.Sprintf(errors.ErrHTTPStatusCode, resp.StatusCode)
+			if err != nil {
+				msg = fmt.Sprintf("%s: %v", msg, err)
+			}
+			return jsonErr(msg)
+		}
 		if err != nil {
 			return jsonErr(fmt.Errorf("%w: %w", errors.ErrSubAgentRequest, err).Error())
-		}
-		if resp.StatusCode != 200 {
-			return jsonErr(fmt.Sprintf(errors.ErrHTTPStatusCode, resp.StatusCode))
 		}
 		if len(res.Choices) == 0 {
 			break

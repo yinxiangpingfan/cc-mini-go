@@ -5,9 +5,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 )
 
 type Call struct {
@@ -67,9 +69,26 @@ func (c *Call) NewCallRequestCtx(ctx context.Context, model string, messages []a
 	if err != nil {
 		return CallResponse{}, nil, err
 	}
+	// 非 200：响应体是错误说明而非补全，原样带出（截断）便于上层分类（如上下文超长）与排查
+	if resp.StatusCode != http.StatusOK {
+		return CallResponse{}, resp, fmt.Errorf("%s", errorBodySnippet(body))
+	}
 	var callResponse CallResponse
 	err = json.Unmarshal(body, &callResponse)
 	return callResponse, resp, err
+}
+
+// errorBodySnippet 把错误响应体压成一行短摘要，附在错误里便于分类与排查。
+func errorBodySnippet(body []byte) string {
+	s := strings.Join(strings.Fields(string(body)), " ") // 折叠所有空白成单行
+	const maxLen = 300
+	if r := []rune(s); len(r) > maxLen {
+		return string(r[:maxLen]) + "…"
+	}
+	if s == "" {
+		return "(empty error body)"
+	}
+	return s
 }
 
 // newCallRequestWithStream creates a new call request to the OpenAI API with streaming enabled.
@@ -106,6 +125,11 @@ func (c *Call) newCallRequestWithStream(ctx context.Context, model string, messa
 		return CallResponse{}, nil, err
 	}
 	defer resp.Body.Close()
+	// 非 200：错误体不是合法 SSE，直接读出带回错误（否则会被当 SSE 逐行解析失败）
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return CallResponse{}, resp, fmt.Errorf("%s", errorBodySnippet(body))
+	}
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
 		line := scanner.Bytes()

@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `cc-mini-go` is a **zero-third-party-dependency** Code Agent framework built entirely on the Go standard library, compatible with the OpenAI ChatCompletion protocol (`/chat/completions`). The **core** `go.mod` must stay dependency-free — use only stdlib (`net/http`, `encoding/json`, `sync`, `bufio`, `log/slog`, etc.). Do not add external modules to the core.
 
-This is a teaching codebase that incrementally implements a coding agent across chapters s00–s19 (tool calling → planning → subagents → skills → context compaction → permission → hooks → memory → system-prompt pipeline → …). Each chapter typically adds one tool or subsystem plus its tests. Implemented through **s10 (system-prompt assembly pipeline)** so far.
+This is a teaching codebase that incrementally implements a coding agent across chapters s00–s19 (tool calling → planning → subagents → skills → context compaction → permission → hooks → memory → system-prompt pipeline → error recovery → …). Each chapter typically adds one tool or subsystem plus its tests. Implemented through **s11 (error recovery)** so far.
 
 ### Two-module layout
 
@@ -139,9 +139,18 @@ Three layers, mirroring permission: `agent/core/hook.go` (pure `HookRunner`: `Re
 
 `agent_tools/compact.go`: the `compact` tool does a manual full conversation summary. The loops also run an automatic **microcompact** time-gate (compress old tool results only after the session has been idle past a gap threshold, on the first turn) and keep a `SessionTranscript` that streams the whole conversation to JSONL on disk, decoupled from compaction.
 
+### Error recovery (s11)
+
+Two layers. **Inner (transport)** — `agent/retry.go`: `callWithRetry`/`streamWithRetry` already do exponential backoff + jitter, respect `Retry-After`, and retry only transient statuses (408/429/5xx). **Outer (recovery selector)** — `agent/recovery.go`: `chooseRecovery(finishReason, err)` (pure, testable) maps a finished call to one of `recoveryNone` / `recoveryContinue` / `recoveryCompact` / `recoveryFail`, each with its own budget (`recoveryState`: `maxContinueAttempts`=3, `maxCompactRecovery`=2). Both loops apply it:
+
+- **Continuation** — when `finish_reason == "length"` (output truncated) on a no-tool-call turn: keep the partial text, append `prompt.ContinuationPrompt` ("don't restart/repeat"), and loop. Budget resets on any tool-call turn (real progress).
+- **Compaction-on-error** — when the LLM call fails with `errors.ErrContextTooLong`: `CompactHistory` then retry. This is the **reactive** safety net distinct from s06's proactive size-gate compaction.
+
+`ErrContextTooLong` is produced in `retry.go` via `isContextTooLong(code, body)` (413, or markers like `context_length_exceeded`). For that to work, `client/call.go` now **surfaces the error response body** in the returned error on any non-200 (both stream and non-stream) — previously the body was discarded and stream non-200 bodies were mis-parsed as SSE. Callers that branch on non-200 (`subagent.go`, `compact.go`) check `resp.StatusCode` **before** `err` so the status code stays visible. Recovery actions are logged (`[recovery] …`) and emitted as `EventRecovery` for the TUI.
+
 ### TUI (`tui/`)
 
-Bubble Tea terminal UI; the agent's `AgentEvent` channel drives a live transcript. Inline-render model (no alt-screen, no mouse capture): finished turns are flushed to the terminal's native scrollback via `tea.Println`, so native wheel-scroll and drag-select/copy both work; `View` renders only the in-progress region + plan panel + input box. It parses inline `<think>…</think>` into a thinking block, shows a persistent todo/plan panel from `todo_list` results, and renders hook/memory notices.
+Bubble Tea terminal UI; the agent's `AgentEvent` channel drives a live transcript. Inline-render model (no alt-screen, no mouse capture): finished turns are flushed to the terminal's native scrollback via `tea.Println`, so native wheel-scroll and drag-select/copy both work; `View` renders only the in-progress region + plan panel + input box. It parses inline `<think>…</think>` into a thinking block, shows a persistent todo/plan panel from `todo_list` results, and renders hook/memory/recovery notices.
 
 ## Conventions
 

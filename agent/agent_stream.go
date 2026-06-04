@@ -10,6 +10,7 @@ import (
 	"github.com/yinxiangpingfan/cc-mini-go/agent_tools"
 	"github.com/yinxiangpingfan/cc-mini-go/client"
 	"github.com/yinxiangpingfan/cc-mini-go/errors"
+	"github.com/yinxiangpingfan/cc-mini-go/prompt"
 )
 
 // StreamAgent 流式对话请求。messages 为完整历史（异构 []any），进出同型以便调用方闭环回传。
@@ -36,9 +37,13 @@ func (a *ChatCompletionAgent) StreamAgent(ctx context.Context, messages []any, s
 	//定义回调函数
 	activeToolCalls := make(map[int]*client.StreamToolCall) // 当前存在的 ToolCalls
 	var contentBuilder strings.Builder                      // 累积本轮 assistant 的 content
+	var lastFinishReason string                             // 本轮最后一个非空 finish_reason（"length" 表示被截断）
 	onMessage := func(sr client.StreamResponse) {
 		if len(sr.Choices) == 0 {
 			return
+		}
+		if fr := sr.Choices[0].FinishReason; fr != "" {
+			lastFinishReason = fr
 		}
 		if rc := sr.Choices[0].Delta.ReasoningContent; rc != "" {
 			// 接了事件 channel 走 TUI，否则保持原有 stdout 打印
@@ -98,7 +103,10 @@ func (a *ChatCompletionAgent) StreamAgent(ctx context.Context, messages []any, s
 	reset := func() {
 		contentBuilder.Reset()
 		activeToolCalls = make(map[int]*client.StreamToolCall)
+		lastFinishReason = ""
 	}
+	//错误恢复预算（续写 / 压缩重试），跨轮累计（s11）
+	var rec recoveryState
 	//开始请求LLM（带最大轮次保护，防止工具调用无限循环）
 	for turn := 0; turn < agentMaxTurns; turn++ {
 		// 每轮开始检查取消，尽快退出
@@ -138,6 +146,14 @@ func (a *ChatCompletionAgent) StreamAgent(ctx context.Context, messages []any, s
 
 		// 流式 LLM 调用：自动重试限流/5xx 与未建连的网络错误
 		if err := a.streamWithRetry(ctx, allMsg, system, clientTool, reset, onMessage); err != nil {
+			// 上下文超长：压缩历史后重试（退避重试无用），限额内 continue
+			if k, why := chooseRecovery("", err); k == recoveryCompact && rec.compactAttempts < maxCompactRecovery {
+				rec.compactAttempts++
+				a.noteRecovery("🗜 " + why + "，压缩后重试")
+				_ = transcript.Flush(allMsg)
+				allMsg = agent_tools.CompactHistory(ctx, a.call, a.cf.Model, allMsg, compactState, "")
+				continue
+			}
 			return allMsg, err
 		}
 		// 构造本轮工具调用列表
@@ -174,10 +190,19 @@ func (a *ChatCompletionAgent) StreamAgent(ctx context.Context, messages []any, s
 		}
 		allMsg = append(allMsg, assistantMsg)
 
-		// 没有工具调用，本轮是最终回复，直接返回
+		// 没有工具调用，本轮是最终回复
 		if len(toolCalls) == 0 {
+			// 输出被截断（finish_reason==length）→ 续写：半截内容已随 assistantMsg 入历史，
+			// 追加续写提示再来一轮（限额内）。
+			if k, _ := chooseRecovery(lastFinishReason, nil); k == recoveryContinue && rec.continueAttempts < maxContinueAttempts {
+				rec.continueAttempts++
+				a.noteRecovery("↻ 输出被截断，续写中")
+				allMsg = append(allMsg, *a.call.Cm.NewUserMessage(prompt.ContinuationPrompt))
+				continue
+			}
 			return allMsg, nil
 		}
+		rec.continueAttempts = 0 // 有工具调用=有进展，续写预算清零
 
 		//检测本轮是否请求手动压缩
 		manualCompact, compactFocus := agent_tools.DetectManualCompact(toolCalls)

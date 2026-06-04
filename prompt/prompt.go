@@ -122,6 +122,10 @@ var ClaudeMDHeader = "Project & user instructions (from CLAUDE.md, layered user 
 // DynamicContextHeader 是静态/动态分界标记。它没有魔力，只提醒：上面相对稳定，下面每轮都可能变。
 var DynamicContextHeader = "=== DYNAMIC CONTEXT (everything below changes between turns) ==="
 
+// ContinuationPrompt 是输出被截断（finish_reason==length）后注入的续写提示（s11 路径 1）。
+// 措辞必须明确「别重来、别重复」，否则模型常会重新总结或重复已输出内容。
+var ContinuationPrompt = "Output limit reached. Continue directly from where you stopped. Do not restart, re-summarize, or repeat anything you have already written."
+
 // CompactPrompt 是 compact 工具的描述（手动触发一次完整压缩）
 var CompactPrompt = `"Summarize the earlier conversation so work can continue in a smaller context. "
         "Use this when the conversation has grown long and old details are no longer needed in full. "

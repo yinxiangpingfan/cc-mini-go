@@ -272,11 +272,12 @@ func summarizeHistory(ctx context.Context, call *client.Call, model string, msgs
 	}
 	summaryMsgs := []any{*call.Cm.NewUserMessage(prompt.CompactSummaryPromptPrefix + conversation)}
 	res, resp, err := call.NewCallRequestCtx(ctx, model, summaryMsgs, false, prompt.CompactSummarySystemPrompt, nil, nil)
+	// 状态码优先：非 200 时 err 携带的是错误响应体，先报状态码
+	if resp != nil && resp.StatusCode != 200 {
+		return "", fmt.Errorf("%w: "+errors.ErrHTTPStatusCode, errors.ErrCompactSummary, resp.StatusCode)
+	}
 	if err != nil {
 		return "", fmt.Errorf("%w: %w", errors.ErrCompactSummary, err)
-	}
-	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("%w: "+errors.ErrHTTPStatusCode, errors.ErrCompactSummary, resp.StatusCode)
 	}
 	if len(res.Choices) == 0 {
 		return "", errors.ErrCompactSummary

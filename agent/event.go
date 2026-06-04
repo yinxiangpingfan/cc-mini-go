@@ -21,6 +21,8 @@ const (
 	EventPermissionHint AgentEventType = "permission_hint"
 	// EventHookNotice hook（如 SessionStart 欢迎语）想向用户展示的提示。
 	EventHookNotice AgentEventType = "hook_notice"
+	// EventRecovery 错误恢复动作（续写 / 压缩重试）发生时发出，供 UI 与日志展示。
+	EventRecovery AgentEventType = "recovery"
 )
 
 // AgentEvent 是 agent 运行过程中向外（如 TUI）广播的进度事件。
