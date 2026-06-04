@@ -23,8 +23,9 @@ import (
 //   3. 整体过长时生成连续性摘要（CompactHistory）
 
 const (
-	// ContextLimit 估算上下文字节数超过该阈值时触发完整压缩
-	ContextLimit = 50000
+	// CharsPerToken 是「字符数 → token 数」的粗略换算系数（英文/代码约 4 字符/token）。
+	// 零依赖下的估算，不是精确 BPE 分词；CJK 偏多时可调小。
+	CharsPerToken = 4
 	// KeepRecentToolResults 微压缩时保留最近 N 个工具结果的完整内容
 	KeepRecentToolResults = 5
 	// PersistThreshold 工具输出超过该字符数时落盘，只在上下文留预览
@@ -201,6 +202,20 @@ func EstimateContextSize(msgs []any) int {
 		return 0
 	}
 	return len(b)
+}
+
+// EstimateTokens 用「序列化字符数 / CharsPerToken」粗估消息序列的 token 数（零依赖、非精确）。
+// 注意：只覆盖 messages 本身，不含 system prompt 与工具 schema（它们不在 msgs 里，由调用方另补开销）。
+// 优先用 API 返回的 usage.prompt_tokens 作权威值，这里只用于冷启动兜底与「新增尾巴」的估算。
+func EstimateTokens(msgs []any) int {
+	if len(msgs) == 0 {
+		return 0
+	}
+	b, err := json.Marshal(msgs)
+	if err != nil {
+		return 0
+	}
+	return len([]rune(string(b))) / CharsPerToken
 }
 
 // SessionTranscript 把整个会话持续以 jsonl 落盘（每条消息一行），与压缩解耦：

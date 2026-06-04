@@ -102,11 +102,12 @@ func (c *Call) newCallRequestWithStream(ctx context.Context, model string, messa
 	allMsgs := make([]any, 0, 1+len(messages))
 	allMsgs = append(allMsgs, *c.Cm.NewSystemMessage(system))
 	reqBody := CallRequest{
-		Model:      model,
-		Messages:   append(allMsgs, messages...),
-		Stream:     true,
-		Tools:      tools,
-		ToolChoice: "auto",
+		Model:         model,
+		Messages:      append(allMsgs, messages...),
+		Stream:        true,
+		Tools:         tools,
+		ToolChoice:    "auto",
+		StreamOptions: &StreamOptions{IncludeUsage: true}, // 末尾多发一个带 usage 的 chunk
 	}
 	reqBodyJson, err := json.Marshal(reqBody)
 	if err != nil {

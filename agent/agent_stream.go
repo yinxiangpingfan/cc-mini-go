@@ -38,7 +38,12 @@ func (a *ChatCompletionAgent) StreamAgent(ctx context.Context, messages []any, s
 	activeToolCalls := make(map[int]*client.StreamToolCall) // 当前存在的 ToolCalls
 	var contentBuilder strings.Builder                      // 累积本轮 assistant 的 content
 	var lastFinishReason string                             // 本轮最后一个非空 finish_reason（"length" 表示被截断）
+	var lastUsage *client.Usage                             // 末尾 usage chunk（include_usage 开启后）的权威 token 数
 	onMessage := func(sr client.StreamResponse) {
+		// usage 在 choices 为空的末尾 chunk 里，必须先于下面的空 choices 早退捕获
+		if sr.Usage != nil {
+			lastUsage = sr.Usage
+		}
 		if len(sr.Choices) == 0 {
 			return
 		}
@@ -104,9 +109,12 @@ func (a *ChatCompletionAgent) StreamAgent(ctx context.Context, messages []any, s
 		contentBuilder.Reset()
 		activeToolCalls = make(map[int]*client.StreamToolCall)
 		lastFinishReason = ""
+		lastUsage = nil
 	}
 	//错误恢复预算（续写 / 压缩重试），跨轮累计（s11）
 	var rec recoveryState
+	//上次发给 API 的消息条数：其后新增的消息按「尾巴」估算 token（配合 lastPromptTokens 权威基线）
+	sentCount := 0
 	//开始请求LLM（带最大轮次保护，防止工具调用无限循环）
 	for turn := 0; turn < agentMaxTurns; turn++ {
 		// 每轮开始检查取消，尽快退出
@@ -123,9 +131,10 @@ func (a *ChatCompletionAgent) StreamAgent(ctx context.Context, messages []any, s
 		if turn == 0 && a.microcompactArmed() {
 			allMsg = agent_tools.MicroCompact(allMsg)
 		}
-		// 整体过大才做完整压缩（按体积，每轮判断）
-		if agent_tools.EstimateContextSize(allMsg) > agent_tools.ContextLimit {
+		// 整体过大才做完整压缩（按 token 估算 vs 配置预算，每轮判断）
+		if a.estimateContextTokens(allMsg, sentCount) > a.cf.ContextTokenBudget() {
 			allMsg = agent_tools.CompactHistory(ctx, a.call, a.cf.Model, allMsg, compactState, "")
+			a.lastPromptTokens = 0 // 历史被重写，旧基线失效，待下次调用重新校准
 		}
 
 		// 本轮计数 +1（计划已多少轮未更新）
@@ -145,6 +154,7 @@ func (a *ChatCompletionAgent) StreamAgent(ctx context.Context, messages []any, s
 		}
 
 		// 流式 LLM 调用：自动重试限流/5xx 与未建连的网络错误
+		sentCount = len(allMsg) // 记录本次发送边界，供下轮估算「新增尾巴」
 		if err := a.streamWithRetry(ctx, allMsg, system, clientTool, reset, onMessage); err != nil {
 			// 上下文超长：压缩历史后重试（退避重试无用），限额内 continue
 			if k, why := chooseRecovery("", err); k == recoveryCompact && rec.compactAttempts < maxCompactRecovery {
@@ -152,9 +162,14 @@ func (a *ChatCompletionAgent) StreamAgent(ctx context.Context, messages []any, s
 				a.noteRecovery("🗜 " + why + "，压缩后重试")
 				_ = transcript.Flush(allMsg)
 				allMsg = agent_tools.CompactHistory(ctx, a.call, a.cf.Model, allMsg, compactState, "")
+				a.lastPromptTokens = 0
 				continue
 			}
 			return allMsg, err
+		}
+		// 用 API 报告的 prompt_tokens 校准权威基线（流式末尾 usage chunk，需 include_usage）
+		if lastUsage != nil && lastUsage.PromptTokens > 0 {
+			a.lastPromptTokens = lastUsage.PromptTokens
 		}
 		// 构造本轮工具调用列表
 		toolCalls := make([]client.ToolCall, 0, len(activeToolCalls))

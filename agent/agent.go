@@ -31,6 +31,8 @@ type ChatCompletionAgent struct {
 
 	mu             sync.Mutex // 保护 lastActivityAt（跨多次 Agent/StreamAgent 调用）
 	lastActivityAt time.Time  // 上次对话结束时刻，作为 microcompact 时间闸的基准
+
+	lastPromptTokens int // 上次 API 报告的 prompt_tokens（token 预算的权威基线，0=本轮还没调过/已因压缩失效）
 }
 
 // microcompactArmed 时间闸：仅当距上次活动 >= GapThreshold（prompt cache 大概率已失效）
@@ -88,6 +90,8 @@ func (a *ChatCompletionAgent) Agent(ctx context.Context, messages []any, system 
 	a.fireSessionStart()
 	//错误恢复预算（续写 / 压缩重试），跨轮累计（s11）
 	var rec recoveryState
+	//上次发给 API 的消息条数：其后新增的消息按「尾巴」估算 token（配合 lastPromptTokens 权威基线）
+	sentCount := 0
 
 	//开始请求LLM（带最大轮次保护，防止工具调用无限循环）
 	for turn := 0; turn < agentMaxTurns; turn++ {
@@ -102,9 +106,10 @@ func (a *ChatCompletionAgent) Agent(ctx context.Context, messages []any, system 
 		if turn == 0 && a.microcompactArmed() {
 			allMsg = agent_tools.MicroCompact(allMsg)
 		}
-		// 整体过大才做完整压缩（按体积，每轮判断）
-		if agent_tools.EstimateContextSize(allMsg) > agent_tools.ContextLimit {
+		// 整体过大才做完整压缩（按 token 估算 vs 配置预算，每轮判断）
+		if a.estimateContextTokens(allMsg, sentCount) > a.cf.ContextTokenBudget() {
 			allMsg = agent_tools.CompactHistory(ctx, a.call, a.cf.Model, allMsg, compactState, "")
+			a.lastPromptTokens = 0 // 历史被重写，旧基线失效，待下次调用重新校准
 		}
 
 		// 本轮计数 +1（计划已多少轮未更新）
@@ -124,6 +129,7 @@ func (a *ChatCompletionAgent) Agent(ctx context.Context, messages []any, system 
 		}
 
 		// LLM 调用：自动重试网络错误与限流/5xx，不可重试错误直接返回
+		sentCount = len(allMsg) // 记录本次发送边界，供下轮估算「新增尾巴」
 		res, err := a.callWithRetry(ctx, allMsg, system, clientTool)
 		if err != nil {
 			// 上下文超长：压缩历史后重试（退避重试无用），限额内 continue
@@ -132,9 +138,14 @@ func (a *ChatCompletionAgent) Agent(ctx context.Context, messages []any, system 
 				a.noteRecovery("🗜 " + why + "，压缩后重试")
 				_ = transcript.Flush(allMsg)
 				allMsg = agent_tools.CompactHistory(ctx, a.call, a.cf.Model, allMsg, compactState, "")
+				a.lastPromptTokens = 0
 				continue
 			}
 			return allMsg, err
+		}
+		// 用 API 报告的 prompt_tokens 校准权威基线（含 system/工具 schema/全历史）
+		if res.Usage.PromptTokens > 0 {
+			a.lastPromptTokens = res.Usage.PromptTokens
 		}
 		if len(res.Choices) == 0 {
 			return allMsg, nil

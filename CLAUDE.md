@@ -35,10 +35,10 @@ cd tui && go build ./... && go vet ./... && go test .   # the TUI module (separa
 Runtime config is read from `~/.cc_mini_go/setting.json` (NOT in the repo, NOT env vars):
 
 ```json
-{ "base_url": "https://.../v1", "api_key": "sk-...", "model": "...", "permission": { ... } }
+{ "base_url": "https://.../v1", "api_key": "sk-...", "model": "...", "max_context_tokens": 60000, "permission": { ... } }
 ```
 
-`base_url` must start with `http://` or `https://`. `config.GetConfig()` loads it; `client.Init` validates the URL. The optional `permission` block configures the permission engine (mode + rules).
+`base_url` must start with `http://` or `https://`. `config.GetConfig()` loads it; `client.Init` validates the URL. The optional `permission` block configures the permission engine (mode + rules). The optional `max_context_tokens` is the context **token** budget that triggers compaction (`Config.ContextTokenBudget()`; `DefaultMaxContextTokens`=32000 when unset) — set it below the model's real window for headroom.
 
 ## Architecture
 
@@ -138,6 +138,8 @@ Three layers, mirroring permission: `agent/core/hook.go` (pure `HookRunner`: `Re
 ### Context compaction
 
 `agent_tools/compact.go`: the `compact` tool does a manual full conversation summary. The loops also run an automatic **microcompact** time-gate (compress old tool results only after the session has been idle past a gap threshold, on the first turn) and keep a `SessionTranscript` that streams the whole conversation to JSONL on disk, decoupled from compaction.
+
+**Size-triggered compaction is token-based** (`agent/tokens.go`): each turn estimates context tokens and compacts when it exceeds `Config.ContextTokenBudget()`. The estimate is **API-primary, estimate-fallback** — `usage.prompt_tokens` from the last response is the authoritative base (it already includes system prompt + tool schemas + full history, which a pure estimate cannot see), plus `EstimateTokens(allMsg[sentCount:])` for messages appended since that call (`sentCount` marks the last sent boundary). When there's no baseline yet (cold start, or first turn after a compaction reset `lastPromptTokens=0`) it falls back to `EstimateTokens(allMsg) + coldStartOverheadTokens`. `EstimateTokens` is a zero-dep heuristic (`chars / CharsPerToken`, ≈4), **not** real BPE. Streaming gets `usage` via `stream_options.include_usage` (captured from the final empty-`choices` chunk in `onMessage`).
 
 ### Error recovery (s11)
 
