@@ -7,13 +7,27 @@ import (
 	"github.com/yinxiangpingfan/cc-mini-go/config"
 )
 
-// 没配 max_context_tokens 时回退默认；配了用配的。
-func TestContextTokenBudget(t *testing.T) {
-	if got := (config.Config{}).ContextTokenBudget(); got != config.DefaultMaxContextTokens {
-		t.Fatalf("unset budget = %d, want default %d", got, config.DefaultMaxContextTokens)
+// 没配 max_context_tokens 时回退默认窗口（200K）；配了用配的。
+func TestContextWindow(t *testing.T) {
+	if got := (config.Config{}).ContextWindow(); got != config.DefaultMaxContextTokens {
+		t.Fatalf("unset window = %d, want default %d", got, config.DefaultMaxContextTokens)
 	}
-	if got := (config.Config{MaxContextTokens: 12345}).ContextTokenBudget(); got != 12345 {
-		t.Fatalf("configured budget = %d, want 12345", got)
+	if config.DefaultMaxContextTokens != 200000 {
+		t.Fatalf("default window = %d, want 200000", config.DefaultMaxContextTokens)
+	}
+	if got := (config.Config{MaxContextTokens: 128000}).ContextWindow(); got != 128000 {
+		t.Fatalf("configured window = %d, want 128000", got)
+	}
+}
+
+// 阈值公式：200K 窗口 → 180K 有效 → 167K 阈值；小窗口兜底为正。
+func TestAutoCompactThreshold(t *testing.T) {
+	if got := agent_tools.AutoCompactThreshold(200000); got != 167000 {
+		t.Fatalf("200K window threshold = %d, want 167000", got)
+	}
+	// 极小窗口不能产出 ≤0 的阈值（否则每轮都压）
+	if got := agent_tools.AutoCompactThreshold(1000); got < 1 {
+		t.Fatalf("tiny window threshold = %d, must be >= 1", got)
 	}
 }
 

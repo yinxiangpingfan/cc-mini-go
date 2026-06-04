@@ -131,8 +131,8 @@ func (a *ChatCompletionAgent) StreamAgent(ctx context.Context, messages []any, s
 		if turn == 0 && a.microcompactArmed() {
 			allMsg = agent_tools.MicroCompact(allMsg)
 		}
-		// 整体过大才做完整压缩（按 token 估算 vs 配置预算，每轮判断）
-		if a.estimateContextTokens(allMsg, sentCount) > a.cf.ContextTokenBudget() {
+		// 整体过大才做完整压缩（按 token 估算 vs 由窗口推导的自动压缩阈值，每轮判断）
+		if a.estimateContextTokens(allMsg, sentCount) > agent_tools.AutoCompactThreshold(a.cf.ContextWindow()) {
 			allMsg = agent_tools.CompactHistory(ctx, a.call, a.cf.Model, allMsg, compactState, "")
 			a.lastPromptTokens = 0 // 历史被重写，旧基线失效，待下次调用重新校准
 		}

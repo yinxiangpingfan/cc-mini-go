@@ -26,6 +26,11 @@ const (
 	// CharsPerToken 是「字符数 → token 数」的粗略换算系数（英文/代码约 4 字符/token）。
 	// 零依赖下的估算，不是精确 BPE 分词；CJK 偏多时可调小。
 	CharsPerToken = 4
+	// MaxOutputTokensForSummary 预留给「生成摘要」那次输出的 token 空间（对齐 Claude Code）。
+	// 公式里是 min(modelMaxOutput, 该值)；本项目不跟踪各模型输出上限，按上界近似（假设 ≥ 它）。
+	MaxOutputTokensForSummary = 20000
+	// AutocompactBufferTokens 自动压缩阈值离「有效窗口」顶部的安全余量（对齐 Claude Code）。
+	AutocompactBufferTokens = 13000
 	// KeepRecentToolResults 微压缩时保留最近 N 个工具结果的完整内容
 	KeepRecentToolResults = 5
 	// PersistThreshold 工具输出超过该字符数时落盘，只在上下文留预览
@@ -202,6 +207,29 @@ func EstimateContextSize(msgs []any) int {
 		return 0
 	}
 	return len(b)
+}
+
+// AutoCompactThreshold 由模型上下文窗口推导自动压缩阈值（对齐 Claude Code 的 autoCompact）：
+//
+//	effectiveWindow = contextWindow − min(modelMaxOutput, MaxOutputTokensForSummary)
+//	threshold       = effectiveWindow − AutocompactBufferTokens
+//
+// 例：200K 窗口 → 180K 有效 → 167K 阈值。估算 token 超过阈值即触发完整压缩，
+// 给「生成摘要的那次输出」和安全余量留出空间。小窗口下兜底，避免阈值 ≤ 0 导致每轮都压。
+func AutoCompactThreshold(contextWindow int) int {
+	reserve := MaxOutputTokensForSummary
+	if reserve > contextWindow {
+		reserve = contextWindow
+	}
+	effective := contextWindow - reserve
+	threshold := effective - AutocompactBufferTokens
+	if threshold < 1 {
+		threshold = effective / 2 // 极小窗口兜底
+		if threshold < 1 {
+			threshold = 1
+		}
+	}
+	return threshold
 }
 
 // EstimateTokens 用「序列化字符数 / CharsPerToken」粗估消息序列的 token 数（零依赖、非精确）。
