@@ -29,11 +29,18 @@ type ImageUrlObj struct {
 //============================Request=====================================
 
 type CallRequest struct {
-	Model      string      `json:"model"`
-	Messages   []any       `json:"messages"`
-	Stream     bool        `json:"stream"`
-	Tools      []Tool      `json:"tools,omitempty"`
-	ToolChoice interface{} `json:"tool_choice,omitempty"` // "none"|"auto"|"required" 或 NamedToolChoice
+	Model         string         `json:"model"`
+	Messages      []any          `json:"messages"`
+	Stream        bool           `json:"stream"`
+	Tools         []Tool         `json:"tools,omitempty"`
+	ToolChoice    interface{}    `json:"tool_choice,omitempty"`    // "none"|"auto"|"required" 或 NamedToolChoice
+	StreamOptions *StreamOptions `json:"stream_options,omitempty"` // 仅流式：开启后末尾会多一个带 usage 的 chunk
+}
+
+// StreamOptions 是 Chat Completion 流式选项。IncludeUsage=true 时，服务端在 [DONE] 前
+// 多发一个 choices 为空、带 usage 的 chunk，供我们拿到权威 prompt_tokens。
+type StreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 type Tool struct {
@@ -113,6 +120,8 @@ type StreamResponse struct {
 	Model             string         `json:"model"`
 	Choices           []StreamChoice `json:"choices"`
 	SystemFingerprint string         `json:"system_fingerprint,omitempty"`
+	// Usage 仅在开启 stream_options.include_usage 后的末尾 chunk 出现（其余 chunk 为 nil）。
+	Usage *Usage `json:"usage,omitempty"`
 }
 
 type StreamChoice struct {

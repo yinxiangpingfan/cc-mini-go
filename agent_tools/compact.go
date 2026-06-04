@@ -23,8 +23,14 @@ import (
 //   3. 整体过长时生成连续性摘要（CompactHistory）
 
 const (
-	// ContextLimit 估算上下文字节数超过该阈值时触发完整压缩
-	ContextLimit = 50000
+	// CharsPerToken 是「字符数 → token 数」的粗略换算系数（英文/代码约 4 字符/token）。
+	// 零依赖下的估算，不是精确 BPE 分词；CJK 偏多时可调小。
+	CharsPerToken = 4
+	// MaxOutputTokensForSummary 预留给「生成摘要」那次输出的 token 空间（对齐 Claude Code）。
+	// 公式里是 min(modelMaxOutput, 该值)；本项目不跟踪各模型输出上限，按上界近似（假设 ≥ 它）。
+	MaxOutputTokensForSummary = 20000
+	// AutocompactBufferTokens 自动压缩阈值离「有效窗口」顶部的安全余量（对齐 Claude Code）。
+	AutocompactBufferTokens = 13000
 	// KeepRecentToolResults 微压缩时保留最近 N 个工具结果的完整内容
 	KeepRecentToolResults = 5
 	// PersistThreshold 工具输出超过该字符数时落盘，只在上下文留预览
@@ -203,6 +209,43 @@ func EstimateContextSize(msgs []any) int {
 	return len(b)
 }
 
+// AutoCompactThreshold 由模型上下文窗口推导自动压缩阈值（对齐 Claude Code 的 autoCompact）：
+//
+//	effectiveWindow = contextWindow − min(modelMaxOutput, MaxOutputTokensForSummary)
+//	threshold       = effectiveWindow − AutocompactBufferTokens
+//
+// 例：200K 窗口 → 180K 有效 → 167K 阈值。估算 token 超过阈值即触发完整压缩，
+// 给「生成摘要的那次输出」和安全余量留出空间。小窗口下兜底，避免阈值 ≤ 0 导致每轮都压。
+func AutoCompactThreshold(contextWindow int) int {
+	reserve := MaxOutputTokensForSummary
+	if reserve > contextWindow {
+		reserve = contextWindow
+	}
+	effective := contextWindow - reserve
+	threshold := effective - AutocompactBufferTokens
+	if threshold < 1 {
+		threshold = effective / 2 // 极小窗口兜底
+		if threshold < 1 {
+			threshold = 1
+		}
+	}
+	return threshold
+}
+
+// EstimateTokens 用「序列化字符数 / CharsPerToken」粗估消息序列的 token 数（零依赖、非精确）。
+// 注意：只覆盖 messages 本身，不含 system prompt 与工具 schema（它们不在 msgs 里，由调用方另补开销）。
+// 优先用 API 返回的 usage.prompt_tokens 作权威值，这里只用于冷启动兜底与「新增尾巴」的估算。
+func EstimateTokens(msgs []any) int {
+	if len(msgs) == 0 {
+		return 0
+	}
+	b, err := json.Marshal(msgs)
+	if err != nil {
+		return 0
+	}
+	return len([]rune(string(b))) / CharsPerToken
+}
+
 // SessionTranscript 把整个会话持续以 jsonl 落盘（每条消息一行），与压缩解耦：
 // 无论是否触发压缩，用户在会话进行中随时都能拿到完整对话日志。
 // 采用 append-only：只追加尚未写盘的新消息，已落盘的完整历史不会被压缩抹掉。
@@ -272,11 +315,12 @@ func summarizeHistory(ctx context.Context, call *client.Call, model string, msgs
 	}
 	summaryMsgs := []any{*call.Cm.NewUserMessage(prompt.CompactSummaryPromptPrefix + conversation)}
 	res, resp, err := call.NewCallRequestCtx(ctx, model, summaryMsgs, false, prompt.CompactSummarySystemPrompt, nil, nil)
+	// 状态码优先：非 200 时 err 携带的是错误响应体，先报状态码
+	if resp != nil && resp.StatusCode != 200 {
+		return "", fmt.Errorf("%w: "+errors.ErrHTTPStatusCode, errors.ErrCompactSummary, resp.StatusCode)
+	}
 	if err != nil {
 		return "", fmt.Errorf("%w: %w", errors.ErrCompactSummary, err)
-	}
-	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("%w: "+errors.ErrHTTPStatusCode, errors.ErrCompactSummary, resp.StatusCode)
 	}
 	if len(res.Choices) == 0 {
 		return "", errors.ErrCompactSummary

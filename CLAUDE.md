@@ -4,67 +4,106 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`cc-mini-go` is a **zero-third-party-dependency** Code Agent framework built entirely on the Go standard library, compatible with the OpenAI ChatCompletion protocol (`/chat/completions`). `go.mod` must stay dependency-free — use only stdlib (`net/http`, `encoding/json`, `sync`, `bufio`, `log/slog`, etc.). Do not add external modules.
+`cc-mini-go` is a **zero-third-party-dependency** Code Agent framework built entirely on the Go standard library, compatible with the OpenAI ChatCompletion protocol (`/chat/completions`). The **core** `go.mod` must stay dependency-free — use only stdlib (`net/http`, `encoding/json`, `sync`, `bufio`, `log/slog`, etc.). Do not add external modules to the core.
 
-This is a teaching codebase that incrementally implements a coding agent across chapters s00–s19 (tool calling → planning → subagents → skills → context compaction → …). Each chapter typically adds one tool plus its tests.
+This is a teaching codebase that incrementally implements a coding agent across chapters s00–s19 (tool calling → planning → subagents → skills → context compaction → permission → hooks → memory → system-prompt pipeline → error recovery → …). Each chapter typically adds one tool or subsystem plus its tests. Implemented through **s11 (error recovery)** so far.
+
+### Two-module layout
+
+There are **two** Go modules:
+
+- **Core** (repo root, `github.com/yinxiangpingfan/cc-mini-go`): the agent, client, tools, prompt, etc. **Stdlib only.**
+- **TUI** (`tui/`, separate `go.mod` with a `replace` back to the core): the terminal UI built on Bubble Tea. This is the **only** place third-party dependencies (charmbracelet/*) are allowed — it keeps the core clean. Build/test it from inside `tui/`.
 
 ## Commands
 
 ```bash
-go build ./...                        # build everything (run after any change)
+go build ./...                        # build the core (run after any change)
 go vet ./...                          # static analysis
-go test -race ./agent_tools/          # unit tests (pure, no network) — the main suite
+go test -race ./agent_tools/          # tool unit tests (pure, no network) — the main suite
+go test -race ./agent/ ./agent/core/  # agent wiring + pure-mechanism tests (permission/hook)
 go test -race ./agent_tools/ -run TestSubAgentRun_ReturnsSummary -v   # single test
 go test ./test/                       # integration tests — HIT THE REAL LLM API, see warning below
+
+cd tui && go build ./... && go vet ./... && go test .   # the TUI module (separate go.mod)
 ```
 
-**`./test/` makes live API calls** (`TestAgent`, `TestCall`, `TestToolStream`, etc.) and depends on `~/.cc_mini_go/setting.json`. They are slow, rate-limitable (429), and will fail without valid credentials. **Never run `go test ./...` from inside an agent loop** — the integration tests spawn their own API calls and will exhaust the rate limit. For verification during development, run `go test -race ./agent_tools/` only.
+**`./test/` makes live API calls** (`TestAgent`, `TestCall`, `TestToolStream`, etc.) and depends on `~/.cc_mini_go/setting.json`. They are slow, rate-limitable (429), and will fail without valid credentials. **Never run `go test ./...` from inside an agent loop** — the integration tests spawn their own API calls and will exhaust the rate limit. For verification during development, run `go test -race ./agent_tools/ ./agent/ ./agent/core/` only.
 
 ## Configuration
 
 Runtime config is read from `~/.cc_mini_go/setting.json` (NOT in the repo, NOT env vars):
 
 ```json
-{ "base_url": "https://.../v1", "api_key": "sk-...", "model": "..." }
+{ "base_url": "https://.../v1", "api_key": "sk-...", "model": "...", "max_context_tokens": 60000, "permission": { ... } }
 ```
 
-`base_url` must start with `http://` or `https://`. `config.GetConfig()` loads it; `client.Init` validates the URL.
+`base_url` must start with `http://` or `https://`. `config.GetConfig()` loads it; `client.Init` validates the URL. The optional `permission` block configures the permission engine (mode + rules). The optional `max_context_tokens` is the model's **context window** in tokens (`Config.ContextWindow()`; `DefaultMaxContextTokens`=200000 when unset); the autocompact trigger is **derived** from it (see below), not the raw value.
 
 ## Architecture
 
+### Layering: `core` (mechanism) → `agent` (wiring) → `tui` (consumer)
+
+A recurring pattern: a **pure, stdlib-only mechanism** lives in `agent/core/`, the **wiring** that injects it into the agent lives in `agent/`, and the **UI** only enables and displays it in `tui/`.
+
+- `agent/core/permission.go` — `PermissionEngine`: pure allow/deny/ask decision logic.
+- `agent/core/hook.go` — `HookRunner`: pure event→handler dispatch with exit codes.
+
+`agent/core` must not import agent/client types — it's the bottom layer.
+
 ### The agent loop (the heart of the system)
 
-Two near-identical loops, `agent/agent.go` (`Agent`, non-streaming) and `agent/agent_stream.go` (`StreamAgent`, SSE). Both do:
+Two near-identical loops, `agent/agent.go` (`Agent`, non-streaming) and `agent/agent_stream.go` (`StreamAgent`, SSE). `NewChatCompletionAgent(cf, call, opts...)` builds the agent via functional options: `WithEventChannel`, `WithPermissions`, `WithApproval`, `WithHooks`, `WithBuiltinHooks`. Both loops:
 
-1. Convert `[]client.Message` → `allMsg []any` (heterogeneous message slice).
-2. `ToolInit(&tools)` registers every tool into a `map[string]func(map[string]any) string` and returns the parallel `[]client.Tool` schema list.
-3. **Augment the system prompt** with the skill catalog (`withSkillCatalog`) and the plan-reminder counter.
-4. Loop: call LLM → if `tool_calls` present, append the assistant message, run all tool funcs **concurrently** (`sync.WaitGroup` + `sync.Mutex` guarding `allMsg`), append each `role:"tool"` result, repeat. → if no tool calls, return.
+1. Copy the incoming `[]any` history (heterogeneous message slice); never mutate the caller's slice.
+2. `ToolInit(&tools)` registers every tool into a `map[string]agent_tools.ToolFunc` and returns the parallel `[]client.Tool` schema list.
+3. **Assemble the system prompt** via the `buildSystemPrompt` pipeline (see below). A plan `<reminder>` is injected separately, per-round, once the plan-reminder counter crosses its threshold.
+4. Fire the `SessionStart` hook exactly once (`sync.Once`), since the loop re-enters per user message.
+5. Apply a microcompact time-gate on the first turn when the session has been idle past the threshold; keep flushing the session transcript to disk.
+6. Loop: call LLM (with retry, see `agent/retry.go`) → if `tool_calls` present, append the assistant message, run all tool funcs **concurrently** (`sync.WaitGroup` + `sync.Mutex` guarding `allMsg`) through `execToolWithHooks`, append each `role:"tool"` result (plus any image/injected messages), repeat. → if no tool calls, return.
 
 Tool functions run in goroutines **without recover**, so a panic in any tool crashes the whole process — tool code must never panic (always use comma-ok type assertions on `args`).
 
+### System-prompt assembly pipeline (`agent/system_prompt.go`, s10)
+
+The system prompt is not one hardcoded string but a **segmented pipeline**. `buildSystemPrompt(core)` joins non-empty sections (`joinNonEmpty`) in order:
+
+- **static block** (relatively stable, cache-friendly): `core` (passed in by the caller, usually `prompt.SystemPrompt`) + `sectionSkills` (skill catalog) + `sectionMemory` (memory bodies) + `sectionClaudeMD` (layered CLAUDE.md).
+- a `=== DYNAMIC CONTEXT ===` boundary marker (`prompt.DynamicContextHeader`), then the **dynamic block** (`sectionDynamic`): date / cwd / model / permission mode — anything that changes between turns.
+
+Notes: **tools are not inlined into the prompt** — they ride the OpenAI `tools` field (`ToolInit`'s `[]client.Tool`), so re-listing them as text would only waste tokens. `sectionClaudeMD` reads layered CLAUDE.md and **stacks** (does not override): user global `~/.cc_mini_go/CLAUDE.md` → project `<cwd>/CLAUDE.md`. Each section returns "" when its source is empty and is skipped. Per-round `<reminder>`s (e.g. the plan reminder) stay on a **separate channel** — they are not baked into this relatively-stable prompt.
+
+### `execToolWithHooks` — the per-tool gauntlet (`agent/hook.go`)
+
+Every tool call goes through: **PreToolUse hook → permission gate → execute → PostToolUse hook**. Hook exit codes: `HookContinue`(0) runs on, `HookBlock`(1) skips the tool and returns a blocked result, `HookInject`(2) runs the tool but collects an extra message. Blocked tools (hook block or permission deny) still return a paired `role:"tool"` result to preserve tool_call/result adjacency; exit-2 injected messages are appended **after** all tool results (collected into `injectedMsgs`, mirroring the image-URI pattern).
+
 ### `[]any` message history
 
-Heterogeneous message structs (`client.Message`, `client.ToolsMessage`, `client.ResponseMessage`) coexist in one `[]any` slice and serialize correctly via Go's JSON marshaling. Key protocol detail: when an assistant turn has only tool calls and no text, `Content` is `nil` (serializes to `null`), which the API requires.
+Heterogeneous message structs (`client.Message`, `client.ToolsMessage`, `client.ResponseMessage`) coexist in one `[]any` slice and serialize correctly via Go's JSON marshaling. The `Agent`/`StreamAgent` entry points take and return `[]any` so callers close the loop with the full history. Key protocol detail: when an assistant turn has only tool calls and no text, `Content` is `nil` (serializes to `null`), which the API requires.
 
 ### Tool authoring pattern
 
 Every tool in `agent_tools/` follows the same shape (see `read.go`/`write.go` as the reference implementations):
 
 ```go
-type Tools struct {                                    // defined in global.go
+// ToolFunc, defined in global.go:
+type ToolFunc = func(ctx context.Context, input map[string]any) string  // returns a JSON string
+
+type Tools struct {            // defined in global.go
     Name string
-    Func func(input map[string]any) string             // returns a JSON string
+    Func ToolFunc `json:"-"`
 }
 
 func NewXxxTool() *Tools { ... }                        // constructor; Func validates args, does work
 func (t *Tools) XxxInfoForLLm() client.Tool { ... }     // returns the OpenAI JSON-schema for the tool
 ```
 
-Then register both in `agent/tool_init.go` (`ToolInit`): add to the `tools` map AND the returned `[]client.Tool`.
+The `ctx` is for cancelling long-running work (e.g. bash). Register both in `agent/tool_init.go` (`ToolInit`): add to the `tools` map AND the returned `[]client.Tool`.
+
+Currently registered tools: `time_now`, `read_file` (also reads images as multimodal input), `write_file`, `bash`, `todo_list`, `task` (subagent), `load_skill`, `compact`, `edit_file`, `grep`, `glob`, `save_memory`, `delete_memory`.
 
 - Tool results — success and error alike — are **JSON strings**. Errors use `jsonErr(msg)` → `{"error": "..."}` (in `global.go`).
-- `FunctionParameters.Properties` is `map[string]any` to support nested schemas (e.g. `todo_list`'s array-of-objects). Simple params use `client.ParameterProperty{}`; nested ones use raw `map[string]any{}`.
+- `FunctionParameters.Properties` is `map[string]any` to support nested schemas (e.g. `todo_list`'s array-of-objects). Simple params use `client.ParameterProperty{}` (which has `Type`/`Description`/`Enum`); nested ones use raw `map[string]any{}`.
 
 ### Error handling convention
 
@@ -73,19 +112,52 @@ All tool errors funnel through sentinel values in the `errors/` package, then `j
 ### Shared concurrent state (`agent_tools/global.go`)
 
 Package-level state guarded by `sync.RWMutex`, mutated across tool calls within a session:
-- `ReadFiles` — SHA256 hash of every file read. `write_file` enforces **read-before-write**: it refuses to overwrite a file not previously read, or one whose hash changed since the read (external-modification guard).
+- `ReadFiles` — SHA256 hash of every file read. `write_file`/`edit_file` enforce **read-before-write**: they refuse to overwrite a file not previously read, or one whose hash changed since the read (external-modification guard).
 - `ToDoList` (`PlanningState`) — the current plan plus `RoundsSinceUpdate`. The agent loop increments the counter each round (only when a plan exists) and injects a `<reminder>` once it reaches the threshold.
 
 ### Skill system (on-demand knowledge)
 
-`agent_tools/skill.go`: a two-layer model. The lightweight **catalog** (name + description only) is injected into the system prompt; the full skill **body** is loaded on demand via the `load_skill` tool. `SkillRegistry` scans `SKILL.md` files (YAML frontmatter + body, supports block scalars) from `~/.cc_mini_go/skills` (global) then `<cwd>/.cc_mini_go/skills` (project, overrides global). The package-level `Skills` registry is built at init from `DefaultSkillDirs()`.
+`agent_tools/skill.go`: a two-layer model. The lightweight **catalog** (name + description only) is injected into the system prompt; the full skill **body** is loaded on demand via the `load_skill` tool. `SkillRegistry` scans `SKILL.md` files (YAML frontmatter + body, supports block scalars via `parseFrontmatter`) from `~/.cc_mini_go/skills` (global) then `<cwd>/.cc_mini_go/skills` (project, overrides global). The package-level `Skills` registry is built at init from `DefaultSkillDirs()`.
+
+### Memory system (cross-session, s09)
+
+`agent_tools/memory.go`: the **mirror image** of the skill system, but read/write and always-injected. `MemoryStore` scans flat `<name>.md` files (reusing `parseFrontmatter`, skipping the `MEMORY.md` index) from the same global→project dir pair. Unlike skills, memory is small and is "long-term direction," so `Describe()` injects the **full bodies** (grouped by type) into the system prompt at session start via `withMemory` — there is no on-demand load tool. Writes go through the `save_memory` / `delete_memory` tools (`Save`/`Delete`), which write to the project dir, rebuild `MEMORY.md`, and update the in-memory table under a `sync.RWMutex` (a real need here — tools run concurrently). Four allowed types (`MemoryTypes`): `user`, `feedback`, `project`, `reference`; the "what not to store" boundary lives in `prompt.SaveMemoryPrompt`, enforced by the model, not code. `save_memory` writes are surfaced in the TUI as a `🧠 已记住` notice.
 
 ### Subagents (context isolation)
 
 `agent_tools/subagent.go`: the `task` tool spawns a child loop (`SubAgentRunner.run`) with a **fresh message list** — no shared history with the parent. The child gets a filtered tool set (`buildChildTools`) that deliberately **excludes `task` itself** to prevent infinite recursion, runs up to `subAgentMaxTurns` (30), and returns only a final text summary; the child context is discarded.
 
+### Permission system (s-permission)
+
+`agent/core/permission.go` is the pure engine (modes + rules → allow/deny/ask). `agent/permission.go` wires it into `execToolWithHooks` (the `gateToolCall` step) and bridges `ask` decisions to an `ApprovalFunc`. The TUI (`tui/permission.go`) implements that approver as a y/n confirmation box. Config comes from the `permission` block in `setting.json`.
+
+### Hook system (s08)
+
+Three layers, mirroring permission: `agent/core/hook.go` (pure `HookRunner`: `Register`/`Run`, exit codes), `agent/hook.go` (wiring: `WithHooks`, `runHook`, `execToolWithHooks`), `agent/hooks_builtin.go` (the **single file** where built-in handlers are registered via `registerBuiltinHooks`; enable with `WithBuiltinHooks`). Events: `SessionStart`, `PreToolUse`, `PostToolUse`. Handlers are agent methods (closures over `a`) so they can `a.emit(...)` events or `slog`. `agent/core` uses no locks for hooks (handlers register at startup, run-time is read-only). See `example/hooks/` for an offline demo.
+
+### Context compaction
+
+`agent_tools/compact.go`: the `compact` tool does a manual full conversation summary. The loops also run an automatic **microcompact** time-gate (compress old tool results only after the session has been idle past a gap threshold, on the first turn) and keep a `SessionTranscript` that streams the whole conversation to JSONL on disk, decoupled from compaction.
+
+**Size-triggered compaction is token-based** (`agent/tokens.go`): each turn estimates context tokens and compacts when it exceeds the **autocompact threshold derived from the context window** (`agent_tools.AutoCompactThreshold(cf.ContextWindow())`, aligned with Claude Code: `window − min(modelMaxOutput, 20000) − 13000`; e.g. 200K → 167K). The estimate is **API-primary, estimate-fallback** — `usage.prompt_tokens` from the last response is the authoritative base (it already includes system prompt + tool schemas + full history, which a pure estimate cannot see), plus `EstimateTokens(allMsg[sentCount:])` for messages appended since that call (`sentCount` marks the last sent boundary). When there's no baseline yet (cold start, or first turn after a compaction reset `lastPromptTokens=0`) it falls back to `EstimateTokens(allMsg) + coldStartOverheadTokens`. `EstimateTokens` is a zero-dep heuristic (`chars / CharsPerToken`, ≈4), **not** real BPE. Streaming gets `usage` via `stream_options.include_usage` (captured from the final empty-`choices` chunk in `onMessage`).
+
+### Error recovery (s11)
+
+Two layers. **Inner (transport)** — `agent/retry.go`: `callWithRetry`/`streamWithRetry` already do exponential backoff + jitter, respect `Retry-After`, and retry only transient statuses (408/429/5xx). **Outer (recovery selector)** — `agent/recovery.go`: `chooseRecovery(finishReason, err)` (pure, testable) maps a finished call to one of `recoveryNone` / `recoveryContinue` / `recoveryCompact` / `recoveryFail`, each with its own budget (`recoveryState`: `maxContinueAttempts`=3, `maxCompactRecovery`=2). Both loops apply it:
+
+- **Continuation** — when `finish_reason == "length"` (output truncated) on a no-tool-call turn: keep the partial text, append `prompt.ContinuationPrompt` ("don't restart/repeat"), and loop. Budget resets on any tool-call turn (real progress).
+- **Compaction-on-error** — when the LLM call fails with `errors.ErrContextTooLong`: `CompactHistory` then retry. This is the **reactive** safety net distinct from s06's proactive size-gate compaction.
+
+`ErrContextTooLong` is produced in `retry.go` via `isContextTooLong(code, body)` (413, or markers like `context_length_exceeded`). For that to work, `client/call.go` now **surfaces the error response body** in the returned error on any non-200 (both stream and non-stream) — previously the body was discarded and stream non-200 bodies were mis-parsed as SSE. Callers that branch on non-200 (`subagent.go`, `compact.go`) check `resp.StatusCode` **before** `err` so the status code stays visible. Recovery actions are logged (`[recovery] …`) and emitted as `EventRecovery` for the TUI.
+
+### TUI (`tui/`)
+
+Bubble Tea terminal UI; the agent's `AgentEvent` channel drives a live transcript. Inline-render model (no alt-screen, no mouse capture): finished turns are flushed to the terminal's native scrollback via `tea.Println`, so native wheel-scroll and drag-select/copy both work; `View` renders only the in-progress region + plan panel + input box. It parses inline `<think>…</think>` into a thinking block, shows a persistent todo/plan panel from `todo_list` results, and renders hook/memory/recovery notices.
+
 ## Conventions
 
 - `--style go_zero`-adjacent naming is not used here; match the existing file's style. Comments in this repo are predominantly Chinese — follow the surrounding file.
-- Note the existing typo `ReadFileInfoForLLm` / `TimeNowInfoForLLm` (lowercase `m`) vs `SubAgentInfoForLLM` / `LoadSkillInfoForLLM` (uppercase). Match whatever the file already uses; don't mass-rename.
-- `.cc_mini_go/` and `temp.md` are gitignored — local skill packs and scratch notes live there and are not committed.
+- Keep the **core** dependency-free; third-party deps belong only in the `tui/` module.
+- Note the inconsistent casing: `ReadFileInfoForLLm` / `TimeNowInfoForLLm` (lowercase `m`) vs `SubAgentInfoForLLM` / `LoadSkillInfoForLLM` / `SaveMemoryInfoForLLM` (uppercase). Match whatever the file already uses; don't mass-rename.
+- `.cc_mini_go/` and `temp.md` are gitignored — local skill packs, memory files, and scratch notes live there and are not committed.
+- Commit messages: conventional-commit style, predominantly Chinese subject lines, ending with the `Co-Authored-By: Claude Opus 4.8` trailer (match recent history).

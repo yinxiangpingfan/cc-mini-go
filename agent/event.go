@@ -17,6 +17,12 @@ const (
 	EventToolResult AgentEventType = "tool_result"
 	// EventRetry LLM 调用失败、准备重试前发出，供 UI 提示「重试中」。
 	EventRetry AgentEventType = "retry"
+	// EventPermissionHint 连续多次工具调用被权限拒绝时发出，提示用户可能卡住、建议切换模式。
+	EventPermissionHint AgentEventType = "permission_hint"
+	// EventHookNotice hook（如 SessionStart 欢迎语）想向用户展示的提示。
+	EventHookNotice AgentEventType = "hook_notice"
+	// EventRecovery 错误恢复动作（续写 / 压缩重试）发生时发出，供 UI 与日志展示。
+	EventRecovery AgentEventType = "recovery"
 )
 
 // AgentEvent 是 agent 运行过程中向外（如 TUI）广播的进度事件。

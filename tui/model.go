@@ -2,16 +2,17 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"math/rand/v2"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/yinxiangpingfan/cc-mini-go/agent"
+	"github.com/yinxiangpingfan/cc-mini-go/agent/core"
 	"github.com/yinxiangpingfan/cc-mini-go/client"
 	"github.com/yinxiangpingfan/cc-mini-go/prompt"
 )
@@ -32,6 +33,7 @@ const (
 	entryTool
 	entryTiming
 	entryError
+	entryNotice // 系统提示（如连续被拒的权限提示）
 )
 
 // entry 是 transcript 里追加式的一条记录（不就地销毁，整轮结束后仍保留）。
@@ -69,10 +71,10 @@ type model struct {
 	cm      *client.ChatCompletionMessage
 	events  chan agent.AgentEvent
 	model   string
+	perms   *core.PermissionEngine // 权限引擎；Shift+Tab 切换模式，帮助行展示当前模式
 
-	input    textarea.Model
-	viewport viewport.Model
-	spinner  spinner.Model
+	input   textarea.Model
+	spinner spinner.Model
 
 	width, height int
 	ready         bool
@@ -98,9 +100,23 @@ type model struct {
 
 	verbose    bool   // Ctrl+O：详细模式（显示思考 + 完整工具参数）
 	killBuffer string // Ctrl+K/U 删除的文本，供 Ctrl+Y 粘贴
+
+	pendingPerm *permissionAskMsg // 非 nil：正在等待用户对某次工具调用做 y/n 确认
+
+	// 正文里内联 <think>…</think> 的流式解析状态（标签可能跨 token 分块到达）
+	inThink      bool   // 当前是否处于 think 段内
+	thinkPending string // 尾部可能是半截标签的缓冲，留到下个分块拼合
+
+	plan []todoItem // 当前计划（todo_list 工具结果解析而来），常驻面板展示
 }
 
-func newModel(ag *agent.ChatCompletionAgent, cm *client.ChatCompletionMessage, events chan agent.AgentEvent, modelName string) *model {
+// todoItem 是 todo_list 工具结果里的一个任务项（与 agent_tools.TodoItem 同形）。
+type todoItem struct {
+	Subject string `json:"subject"`
+	Status  string `json:"status"`
+}
+
+func newModel(ag *agent.ChatCompletionAgent, cm *client.ChatCompletionMessage, events chan agent.AgentEvent, modelName string, perms *core.PermissionEngine) *model {
 	ta := textarea.New()
 	ta.Placeholder = `问点什么…（Enter 发送，\+Enter 或 Ctrl+J 换行）`
 	ta.ShowLineNumbers = false
@@ -119,6 +135,7 @@ func newModel(ag *agent.ChatCompletionAgent, cm *client.ChatCompletionMessage, e
 		cm:          cm,
 		events:      events,
 		model:       modelName,
+		perms:       perms,
 		input:       ta,
 		spinner:     sp,
 		curAsstIdx:  -1,
@@ -145,32 +162,23 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 
-	case tea.MouseMsg:
-		// 鼠标滚轮交给 viewport 处理（滚动 transcript）
-		if m.ready {
-			var cmd tea.Cmd
-			m.viewport, cmd = m.viewport.Update(msg)
-			return m, cmd
-		}
-		return m, nil
-
 	case agent.AgentEvent:
 		m.applyEvent(msg)
-		m.refreshViewport()
 		return m, m.waitEvent()
 
-	case doneMsg:
-		m.finishTurn(msg)
-		m.refreshViewport()
+	case permissionAskMsg:
+		// 经 program.Send 注入：进入等待确认状态，渲染 y/n 提示框。
+		m.pendingPerm = &msg
 		return m, nil
+
+	case doneMsg:
+		// 收尾并把本轮 transcript 刷入终端原生回滚区（返回的 tea.Println 命令负责打印）
+		return m, m.finishTurn(msg)
 
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
-		if m.running {
-			m.refreshViewport() // 让底部计时 / spinner / 重试倒计时持续刷新
-		}
-		return m, cmd
+		return m, cmd // View 每帧重算，底部计时/spinner 随之刷新
 	}
 
 	if !m.running {
@@ -183,6 +191,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// 权限确认期间：只认 y/n（及 esc/ctrl+c），吞掉其它按键，避免误输入。
+	if m.pendingPerm != nil {
+		return m.handlePermKey(msg)
+	}
+
 	// 粘贴（bracketed paste）：先让 textarea 插入（它会把 \r 归一成 \n），
 	// 再按归一后的值算高度，并用 SetValue 把内部视口拉回顶部——否则多行粘贴
 	// 会卡在内部视口下滚的位置（之前只剩末行 / 顶掉首行）。
@@ -218,18 +231,25 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case "ctrl+l":
-		// 清屏：清空可见 transcript，保留对话历史（m.history 不动）
+		// 清屏：清掉可见屏幕与本轮 live 区，对话历史（m.history）与回滚区不动
 		m.entries = nil
 		m.curAsstIdx = -1
 		m.curThinkIdx = -1
 		m.toolIdx = make(map[string]int)
-		m.refreshViewport()
-		return m, nil
+		return m, tea.ClearScreen
 
 	case "ctrl+o":
 		// 切换详细输出（思考 + 完整工具参数）
 		m.verbose = !m.verbose
 		m.refreshViewport()
+		return m, nil
+
+	case "shift+tab":
+		// 循环切换权限模式：auto → plan → default → auto（即时生效，下一个工具判定即用新模式）
+		if m.perms != nil {
+			m.perms.SetMode(cycleMode(m.perms.Mode()))
+			m.refreshViewport()
+		}
 		return m, nil
 
 	case "ctrl+y":
@@ -278,12 +298,6 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m.send()
 
-	case "pgup":
-		m.viewport.HalfPageUp()
-		return m, nil
-	case "pgdown":
-		m.viewport.HalfPageDown()
-		return m, nil
 	}
 
 	if !m.running {
@@ -293,6 +307,34 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	return m, nil
+}
+
+// handlePermKey 处理权限确认框的按键：y/Y/enter 允许，n/N/esc 拒绝，ctrl+c 拒绝并中断本轮。
+func (m *model) handlePermKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y", "enter":
+		m.resolvePerm(true)
+	case "n", "N", "esc":
+		m.resolvePerm(false)
+	case "ctrl+c":
+		// 拒绝本次，并中断整轮生成
+		m.resolvePerm(false)
+		if m.cancel != nil {
+			m.cancel()
+		}
+	}
+	return m, nil // 确认期间吞掉其它按键
+}
+
+// resolvePerm 把用户决定回传给等待中的 approver 并退出确认状态。
+// reply 带缓冲，即使 approver 已因 ctx 取消提前返回，这里发送也不会阻塞。
+func (m *model) resolvePerm(ok bool) {
+	if m.pendingPerm == nil {
+		return
+	}
+	m.pendingPerm.reply <- ok
+	m.pendingPerm = nil
+	m.refreshViewport()
 }
 
 // deletedChunk 返回 before 相对 after 被删掉的连续片段（用于 Ctrl+K/U 后存入 killBuffer）。
@@ -351,6 +393,8 @@ func (m *model) send() (tea.Model, tea.Cmd) {
 	// 重置本轮流式定位与状态
 	m.curAsstIdx = -1
 	m.curThinkIdx = -1
+	m.inThink = false
+	m.thinkPending = ""
 	m.toolIdx = make(map[string]int)
 	m.retrying = false
 	m.running = true
@@ -366,8 +410,6 @@ func (m *model) send() (tea.Model, tea.Cmd) {
 		m.program.Send(doneMsg{messages: msgs, err: err})
 	}()
 
-	m.refreshViewport()
-	m.viewport.GotoBottom() // 发新消息时主动滚到底，展示本轮
 	return m, nil
 }
 
@@ -381,22 +423,12 @@ func (m *model) applyEvent(ev agent.AgentEvent) {
 
 	switch ev.Type {
 	case agent.EventReasoning:
-		m.curAsstIdx = -1 // 思考与正文分块
-		if m.curThinkIdx < 0 {
-			m.entries = append(m.entries, entry{kind: entryThinking, text: ev.Text})
-			m.curThinkIdx = len(m.entries) - 1
-		} else {
-			m.entries[m.curThinkIdx].text += ev.Text
-		}
+		// 独立 reasoning 流（部分模型单独下发）：直接进思考块
+		m.appendThink(ev.Text)
 
 	case agent.EventContent:
-		m.curThinkIdx = -1
-		if m.curAsstIdx < 0 {
-			m.entries = append(m.entries, entry{kind: entryAssistant, text: ev.Text})
-			m.curAsstIdx = len(m.entries) - 1
-		} else {
-			m.entries[m.curAsstIdx].text += ev.Text
-		}
+		// 正文里可能内联 <think>…</think>：流式拆分，思考段进思考块、其余进正文
+		m.feedContent(ev.Text)
 
 	case agent.EventToolStart:
 		m.curAsstIdx = -1 // 工具后若再有正文，另起一块
@@ -409,6 +441,12 @@ func (m *model) applyEvent(ev agent.AgentEvent) {
 			m.entries[idx].toolDone = true
 			m.entries[idx].text = toolResultPreview(ev.Text)
 		}
+		if ev.ToolName == "todo_list" {
+			m.updatePlan(ev.Text) // 同步常驻计划面板
+		}
+		if ev.ToolName == "save_memory" {
+			m.noteMemorySaved(ev.Text) // 让「记住了什么」对用户透明
+		}
 
 	case agent.EventRetry:
 		// 记录倒计时基准；render 时按 retryUntil 实时算剩余秒，逐秒跳动
@@ -416,14 +454,153 @@ func (m *model) applyEvent(ev agent.AgentEvent) {
 		m.retryUntil = time.Now().Add(ev.Delay)
 		m.retryAttempt = ev.Attempt
 		m.retryMax = ev.Max
+
+	case agent.EventPermissionHint, agent.EventHookNotice, agent.EventRecovery:
+		// 系统通知（连续被拒提示 / hook 提示 / 错误恢复）：插入 transcript，并让后续正文另起一块
+		m.curAsstIdx = -1
+		m.curThinkIdx = -1
+		m.entries = append(m.entries, entry{kind: entryNotice, text: ev.Text})
 	}
 }
 
-// finishTurn 收尾一轮：提交历史、追加计时/错误条目、清状态。
-func (m *model) finishTurn(msg doneMsg) {
+// think 标签：正文里内联的思考分隔符。
+const (
+	thinkOpen  = "<think>"
+	thinkClose = "</think>"
+)
+
+// feedContent 流式解析正文里的 <think>…</think>：思考段路由到思考块，其余进正文。
+// 标签可能被切到不同 token 分块里，故用 thinkPending 暂存「尾部可能是标签前缀」的部分。
+func (m *model) feedContent(text string) {
+	buf := m.thinkPending + text
+	m.thinkPending = ""
+	for buf != "" {
+		tag := thinkOpen
+		if m.inThink {
+			tag = thinkClose
+		}
+		if i := strings.Index(buf, tag); i >= 0 {
+			m.emitContentSeg(buf[:i]) // 标签前的部分属当前模式
+			buf = buf[i+len(tag):]
+			m.inThink = !m.inThink // 跨过标签切换模式
+			continue
+		}
+		// 没有完整标签：把可能是半截标签的尾巴留到下个分块
+		hold := suffixPrefixLen(buf, tag)
+		m.emitContentSeg(buf[:len(buf)-hold])
+		m.thinkPending = buf[len(buf)-hold:]
+		buf = ""
+	}
+}
+
+// emitContentSeg 按当前模式把一段文本并入思考块或正文块（空串忽略）。
+func (m *model) emitContentSeg(seg string) {
+	if seg == "" {
+		return
+	}
+	if m.inThink {
+		m.appendThink(seg)
+	} else {
+		m.appendAsst(seg)
+	}
+}
+
+// appendThink 把文本并入当前思考块（与正文分块）。
+func (m *model) appendThink(text string) {
+	if text == "" {
+		return
+	}
+	m.curAsstIdx = -1
+	if m.curThinkIdx < 0 {
+		m.entries = append(m.entries, entry{kind: entryThinking, text: text})
+		m.curThinkIdx = len(m.entries) - 1
+	} else {
+		m.entries[m.curThinkIdx].text += text
+	}
+}
+
+// appendAsst 把文本并入当前正文块（与思考分块）。
+func (m *model) appendAsst(text string) {
+	if text == "" {
+		return
+	}
+	m.curThinkIdx = -1
+	if m.curAsstIdx < 0 {
+		m.entries = append(m.entries, entry{kind: entryAssistant, text: text})
+		m.curAsstIdx = len(m.entries) - 1
+	} else {
+		m.entries[m.curAsstIdx].text += text
+	}
+}
+
+// suffixPrefixLen 返回 s 的最长后缀长度，使该后缀同时是 tag 的前缀。
+// 用于跨分块的半截标签：如 s 以 "<thi" 结尾、tag 是 "<think>"，则返回 4。
+func suffixPrefixLen(s, tag string) int {
+	n := len(tag) - 1
+	if n > len(s) {
+		n = len(s)
+	}
+	for ; n > 0; n-- {
+		if strings.HasSuffix(s, tag[:n]) {
+			return n
+		}
+	}
+	return 0
+}
+
+// updatePlan 从 todo_list 工具结果（{"todos":[…]}）解析出计划，供常驻面板展示。
+// 出错结果（无 todos 字段）不覆盖现有计划，避免误清空。
+func (m *model) updatePlan(toolResult string) {
+	var res struct {
+		Todos []todoItem `json:"todos"`
+	}
+	if json.Unmarshal([]byte(toolResult), &res) == nil && res.Todos != nil {
+		m.plan = res.Todos
+		m.relayout() // 面板高度变化 → 重排 viewport
+	}
+}
+
+// noteMemorySaved 在 save_memory 成功后插入一条「已记住」通知，让记忆对用户透明。
+// 解析失败或是错误结果（无 saved 字段）时静默跳过，不打扰。
+func (m *model) noteMemorySaved(toolResult string) {
+	var r struct {
+		Saved string `json:"saved"`
+		Type  string `json:"type"`
+	}
+	if json.Unmarshal([]byte(toolResult), &r) != nil || r.Saved == "" {
+		return
+	}
+	m.curAsstIdx = -1 // 通知后若再有正文，另起一块
+	m.curThinkIdx = -1
+	m.entries = append(m.entries, entry{kind: entryNotice, text: "🧠 已记住:" + r.Saved + "（" + r.Type + "）"})
+}
+
+// hasActivePlan 是否有需要展示的计划：存在且尚有未完成项（全完成则收起面板）。
+func (m *model) hasActivePlan() bool {
+	for _, it := range m.plan {
+		if it.Status != "completed" {
+			return true
+		}
+	}
+	return false
+}
+
+// finishTurn 收尾一轮：提交历史、追加计时/错误条目、清状态，
+// 并把本轮全部条目刷入终端原生回滚区（返回的 tea.Println 命令负责打印），随后清空 live 区。
+func (m *model) finishTurn(msg doneMsg) tea.Cmd {
 	m.running = false
 	m.cancel = nil
 	m.retrying = false
+	// 流结束：把可能残留的半截标签缓冲按当前模式落地（它终究不是标签）
+	if m.thinkPending != "" {
+		m.emitContentSeg(m.thinkPending)
+		m.thinkPending = ""
+	}
+	// 若仍有未决确认（如被取消时），回拒以解阻塞 approver 并退出确认态。
+	if m.pendingPerm != nil {
+		m.pendingPerm.reply <- false
+		m.pendingPerm = nil
+	}
 	elapsed := int(time.Since(m.startTime).Seconds())
 
 	// 完整历史闭环：用 agent 返回的 []any 覆盖本地历史，工具往返也随之跨轮保留。
@@ -443,4 +620,15 @@ func (m *model) finishTurn(msg doneMsg) {
 			text: workWords[m.workWord].ed + " for " + secs(elapsed),
 		})
 	}
+
+	// 本轮 transcript 刷入回滚区（此时 running 已为 false，renderTranscript 不含底部工作行），
+	// 再清空 live 区——下一帧 View 只剩计划面板与输入框。
+	out := m.renderTranscript(m.width)
+	m.entries = nil
+	m.curAsstIdx = -1
+	m.curThinkIdx = -1
+	if strings.TrimSpace(out) == "" {
+		return nil
+	}
+	return tea.Println(out)
 }

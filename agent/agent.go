@@ -6,10 +6,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yinxiangpingfan/cc-mini-go/agent/core"
 	"github.com/yinxiangpingfan/cc-mini-go/agent_tools"
 	"github.com/yinxiangpingfan/cc-mini-go/client"
 	"github.com/yinxiangpingfan/cc-mini-go/config"
 	"github.com/yinxiangpingfan/cc-mini-go/errors"
+	"github.com/yinxiangpingfan/cc-mini-go/prompt"
 )
 
 type ChatCompletionAgent struct {
@@ -17,8 +19,20 @@ type ChatCompletionAgent struct {
 	call   *client.Call
 	events chan<- AgentEvent // 可选：向外广播进度事件（如重试），nil 表示不广播
 
+	perms   *core.PermissionEngine // 可选：工具执行前的权限闸；nil 表示不启用，跳过检查
+	approve ApprovalFunc           // 可选：ask 判定时的人机确认回调；nil 时 ask 按拒绝处理
+	hooks   *core.HookRunner       // 可选：工具前后的 hook 扩展点；nil 表示不启用，所有时机放行
+
+	builtinHooks bool      // 是否注册内置 hook（WithBuiltinHooks 开启），在构造末尾生效
+	sessionOnce  sync.Once // 保证 SessionStart 整个会话只触发一次（Agent/StreamAgent 每条消息都重入）
+
+	permMu     sync.Mutex // 保护 denyStreak（工具在并发 goroutine 中各自判定）
+	denyStreak int        // 连续被拒次数，达阈值发 EventPermissionHint 后清零
+
 	mu             sync.Mutex // 保护 lastActivityAt（跨多次 Agent/StreamAgent 调用）
 	lastActivityAt time.Time  // 上次对话结束时刻，作为 microcompact 时间闸的基准
+
+	lastPromptTokens int // 上次 API 报告的 prompt_tokens（token 预算的权威基线，0=本轮还没调过/已因压缩失效）
 }
 
 // microcompactArmed 时间闸：仅当距上次活动 >= GapThreshold（prompt cache 大概率已失效）
@@ -47,6 +61,10 @@ func NewChatCompletionAgent(cf *config.Config, call *client.Call, opts ...AgentO
 	for _, opt := range opts {
 		opt(a)
 	}
+	// 选项应用完毕后再注册内置 hook：此时 hooks/events 等都已就位，且能叠加到自定义 runner 上。
+	if a.builtinHooks {
+		a.registerBuiltinHooks()
+	}
 	return a
 }
 
@@ -58,8 +76,8 @@ func (a *ChatCompletionAgent) Agent(ctx context.Context, messages []any, system 
 	//存储工具信息与调用函数
 	tools := make(map[string]agent_tools.ToolFunc)
 	clientTool := a.ToolInit(&tools)
-	//把 skill 目录拼进 system prompt（轻量发现层）
-	system = a.withSkillCatalog(system)
+	//把 system prompt 组装成分段流水线：core + skills + memory + CLAUDE.md + 动态环境（s10）
+	system = a.buildSystemPrompt(system)
 	//上下文压缩状态（跨轮）
 	compactState := agent_tools.NewCompactState()
 	//会话转录：整段对话持续以 jsonl 落盘，与压缩解耦
@@ -68,6 +86,12 @@ func (a *ChatCompletionAgent) Agent(ctx context.Context, messages []any, system 
 	defer func() { _ = transcript.Flush(allMsg) }()
 	//记录本次对话结束时刻，供下次 microcompact 时间闸判定
 	defer a.markActivity()
+	//会话级 hook：整个会话仅首条消息触发一次（sessionOnce 守护）
+	a.fireSessionStart()
+	//错误恢复预算（续写 / 压缩重试），跨轮累计（s11）
+	var rec recoveryState
+	//上次发给 API 的消息条数：其后新增的消息按「尾巴」估算 token（配合 lastPromptTokens 权威基线）
+	sentCount := 0
 
 	//开始请求LLM（带最大轮次保护，防止工具调用无限循环）
 	for turn := 0; turn < agentMaxTurns; turn++ {
@@ -82,9 +106,10 @@ func (a *ChatCompletionAgent) Agent(ctx context.Context, messages []any, system 
 		if turn == 0 && a.microcompactArmed() {
 			allMsg = agent_tools.MicroCompact(allMsg)
 		}
-		// 整体过大才做完整压缩（按体积，每轮判断）
-		if agent_tools.EstimateContextSize(allMsg) > agent_tools.ContextLimit {
+		// 整体过大才做完整压缩（按 token 估算 vs 由窗口推导的自动压缩阈值，每轮判断）
+		if a.estimateContextTokens(allMsg, sentCount) > agent_tools.AutoCompactThreshold(a.cf.ContextWindow()) {
 			allMsg = agent_tools.CompactHistory(ctx, a.call, a.cf.Model, allMsg, compactState, "")
+			a.lastPromptTokens = 0 // 历史被重写，旧基线失效，待下次调用重新校准
 		}
 
 		// 本轮计数 +1（计划已多少轮未更新）
@@ -104,9 +129,23 @@ func (a *ChatCompletionAgent) Agent(ctx context.Context, messages []any, system 
 		}
 
 		// LLM 调用：自动重试网络错误与限流/5xx，不可重试错误直接返回
+		sentCount = len(allMsg) // 记录本次发送边界，供下轮估算「新增尾巴」
 		res, err := a.callWithRetry(ctx, allMsg, system, clientTool)
 		if err != nil {
+			// 上下文超长：压缩历史后重试（退避重试无用），限额内 continue
+			if k, why := chooseRecovery("", err); k == recoveryCompact && rec.compactAttempts < maxCompactRecovery {
+				rec.compactAttempts++
+				a.noteRecovery("🗜 " + why + "，压缩后重试")
+				_ = transcript.Flush(allMsg)
+				allMsg = agent_tools.CompactHistory(ctx, a.call, a.cf.Model, allMsg, compactState, "")
+				a.lastPromptTokens = 0
+				continue
+			}
 			return allMsg, err
+		}
+		// 用 API 报告的 prompt_tokens 校准权威基线（含 system/工具 schema/全历史）
+		if res.Usage.PromptTokens > 0 {
+			a.lastPromptTokens = res.Usage.PromptTokens
 		}
 		if len(res.Choices) == 0 {
 			return allMsg, nil
@@ -120,6 +159,7 @@ func (a *ChatCompletionAgent) Agent(ctx context.Context, messages []any, system 
 		}
 		//处理工具调用
 		if len(res.Choices[0].Message.ToolCalls) > 0 {
+			rec.continueAttempts = 0 // 有工具调用=有进展，续写预算清零
 			//追加工具请求信息
 			allMsg = append(allMsg, *a.call.Cm.NewToolsCall(res.Choices[0].Message.Content, res.Choices[0].Message.ToolCalls))
 			//助手在调用工具的同时可能带文本，一并广播
@@ -130,7 +170,8 @@ func (a *ChatCompletionAgent) Agent(ctx context.Context, messages []any, system 
 			manualCompact, compactFocus := agent_tools.DetectManualCompact(res.Choices[0].Message.ToolCalls)
 			var wg sync.WaitGroup
 			var mu sync.Mutex
-			var imageURIs []string // 图片工具结果拆出的 data URI，待工具结果全部就位后再追加
+			var imageURIs []string    // 图片工具结果拆出的 data URI，待工具结果全部就位后再追加
+			var injectedMsgs []string // hook（exit 2）注入的补充消息，同样待工具结果全部就位后再追加
 			for _, v := range res.Choices[0].Message.ToolCalls {
 				if f, exists := tools[v.Function.Name]; exists {
 					wg.Add(1)
@@ -139,10 +180,8 @@ func (a *ChatCompletionAgent) Agent(ctx context.Context, messages []any, system 
 						a.emit(AgentEvent{Type: EventToolStart, ToolID: v.Id, ToolName: v.Function.Name, ToolArgs: v.Function.Arguments})
 						var args map[string]any
 						json.Unmarshal([]byte(v.Function.Arguments), &args)
-						//大结果落盘，只在上下文留预览；safeToolCall 捕获工具 panic 避免崩溃
-						res := agent_tools.PersistLargeOutput(v.Function.Name, v.Id, safeToolCall(ctx, v.Function.Name, f, args))
-						//图片结果拆成「文字摘要 + data URI」：摘要进 tool 消息，图片随后单独发
-						content, imageURI, isImage := agent_tools.SplitImageResult(res)
+						//PreToolUse hook → 权限闸 → 执行 → PostToolUse hook，被拦截仍回传配对的 tool 结果
+						content, imageURI, isImage, inject := a.execToolWithHooks(ctx, v.Id, v.Function.Name, v.Function.Arguments, args, f)
 						a.emit(AgentEvent{Type: EventToolResult, ToolID: v.Id, ToolName: v.Function.Name, Text: content})
 						mu.Lock()
 						//追加工具返回信息
@@ -150,6 +189,7 @@ func (a *ChatCompletionAgent) Agent(ctx context.Context, messages []any, system 
 						if isImage {
 							imageURIs = append(imageURIs, imageURI)
 						}
+						injectedMsgs = append(injectedMsgs, inject...)
 						mu.Unlock()
 					}()
 				}
@@ -159,16 +199,28 @@ func (a *ChatCompletionAgent) Agent(ctx context.Context, messages []any, system 
 			for _, uri := range imageURIs {
 				allMsg = append(allMsg, *a.call.Cm.NewImageMessage(uri))
 			}
+			//hook 注入的补充消息接在所有工具结果之后，避免插在 tool_call 与其 result 之间破坏配对
+			for _, msg := range injectedMsgs {
+				allMsg = append(allMsg, *a.call.Cm.NewUserMessage(msg))
+			}
 			//手动压缩与自动压缩复用同一条机制（压缩前先把本轮消息落盘）
 			if manualCompact {
 				_ = transcript.Flush(allMsg)
 				allMsg = agent_tools.CompactHistory(ctx, a.call, a.cf.Model, allMsg, compactState, compactFocus)
 			}
 		} else {
-			//没有工具调用，返回结果
-			if s, ok := res.Choices[0].Message.Content.(string); ok && s != "" {
+			//没有工具调用，本轮是最终文本
+			s, _ := res.Choices[0].Message.Content.(string)
+			if s != "" {
 				a.emit(AgentEvent{Type: EventContent, Text: s})
 				allMsg = append(allMsg, *a.call.Cm.NewAssistantMessage(s))
+			}
+			// 输出被截断（finish_reason==length）→ 续写：保留半截，追加续写提示再来一轮
+			if k, _ := chooseRecovery(res.Choices[0].FinishReason, nil); k == recoveryContinue && rec.continueAttempts < maxContinueAttempts {
+				rec.continueAttempts++
+				a.noteRecovery("↻ 输出被截断，续写中")
+				allMsg = append(allMsg, *a.call.Cm.NewUserMessage(prompt.ContinuationPrompt))
+				continue
 			}
 			return allMsg, nil
 		}

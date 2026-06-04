@@ -3,18 +3,9 @@ package agent
 import (
 	tool "github.com/yinxiangpingfan/cc-mini-go/agent_tools"
 	"github.com/yinxiangpingfan/cc-mini-go/client"
-	"github.com/yinxiangpingfan/cc-mini-go/prompt"
 )
 
-// withSkillCatalog 把轻量的 skill 目录拼到 system prompt 末尾（发现层）。
-// 只放名称和描述，完整正文由模型按需通过 load_skill 工具加载。
-func (a *ChatCompletionAgent) withSkillCatalog(system string) string {
-	catalog := tool.Skills.DescribeAvailable()
-	if catalog == "(no skills available)" {
-		return system
-	}
-	return system + "\n\n" + prompt.SkillCatalogHeader + "\n" + catalog
-}
+// 注：system prompt 的组装（含 skill 目录、memory）已迁到 system_prompt.go 的 buildSystemPrompt 流水线。
 
 func (a *ChatCompletionAgent) ToolInit(tools *map[string]tool.ToolFunc) []client.Tool {
 	timeNowTool := tool.NewTimeNowTool()
@@ -39,6 +30,10 @@ func (a *ChatCompletionAgent) ToolInit(tools *map[string]tool.ToolFunc) []client
 	(*tools)[grepTool.Name] = grepTool.Func
 	globTool := tool.NewGlobTool()
 	(*tools)[globTool.Name] = globTool.Func
+	saveMemoryTool := tool.NewSaveMemoryTool(tool.Memory)
+	(*tools)[saveMemoryTool.Name] = saveMemoryTool.Func
+	deleteMemoryTool := tool.NewDeleteMemoryTool(tool.Memory)
+	(*tools)[deleteMemoryTool.Name] = deleteMemoryTool.Func
 	return []client.Tool{
 		timeNowTool.TimeNowInfoForLLm(),
 		readFileTool.ReadFileInfoForLLm(),
@@ -51,5 +46,7 @@ func (a *ChatCompletionAgent) ToolInit(tools *map[string]tool.ToolFunc) []client
 		editFileTool.EditFileInfoForLLm(),
 		grepTool.GrepInfoForLLm(),
 		globTool.GlobInfoForLLm(),
+		saveMemoryTool.SaveMemoryInfoForLLM(),
+		deleteMemoryTool.DeleteMemoryInfoForLLM(),
 	}
 }

@@ -8,48 +8,21 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/lipgloss"
 )
 
-// resize 根据终端尺寸重排：transcript 占主区，输入框 + 帮助行固定在底部。
+// resize 记录终端尺寸并调整输入框宽度。内联渲染下没有 viewport，布局由 View 每帧重算。
 func (m *model) resize(w, h int) {
 	m.width, m.height = w, h
-	if !m.ready {
-		m.viewport = viewport.New(w, 1)
-		m.ready = true
-	}
-	m.relayout()
-	m.refreshViewport()
+	m.ready = true
+	m.input.SetWidth(w - 2)
 }
 
-// relayout 按当前输入框高度重算 viewport 尺寸（输入框增高时调用）。
-func (m *model) relayout() {
-	if !m.ready {
-		return
-	}
-	// 垂直预算：输入块(input 高度 + 边框2) + 帮助行(1)
-	vpHeight := m.height - (m.input.Height() + 2) - 1
-	if vpHeight < 1 {
-		vpHeight = 1
-	}
-	m.viewport.Width = m.width
-	m.viewport.Height = vpHeight
-	m.input.SetWidth(m.width - 2)
-}
+// relayout 旧 viewport 布局的遗留入口；内联渲染下无需重算尺寸，留作空操作以兼容调用点。
+func (m *model) relayout() {}
 
-// refreshViewport 重建 transcript 内容；仅当用户本就停在底部时才跟随到底，
-// 这样生成中向上滚动查看历史不会被强行拽回（修复「一直聚焦最下方」）。
-func (m *model) refreshViewport() {
-	if !m.ready {
-		return
-	}
-	atBottom := m.viewport.AtBottom()
-	m.viewport.SetContent(m.renderTranscript(m.viewport.Width))
-	if atBottom {
-		m.viewport.GotoBottom()
-	}
-}
+// refreshViewport 旧 viewport 的内容刷新入口；内联渲染下 View 每次 Update 后自动重算，空操作。
+func (m *model) refreshViewport() {}
 
 // renderTranscript 把所有条目 + 底部工作行渲染成可滚动文本。
 func (m *model) renderTranscript(width int) string {
@@ -104,6 +77,10 @@ func (m *model) renderTranscript(width int) string {
 		case entryError:
 			b.WriteString(errStyle.Render("✗ " + e.text))
 			b.WriteString("\n\n")
+
+		case entryNotice:
+			b.WriteString(permTitleStyle.Render("⚠ " + e.text))
+			b.WriteString("\n\n")
 		}
 	}
 
@@ -125,19 +102,95 @@ func (m *model) View() string {
 	if !m.ready {
 		return "正在初始化…"
 	}
-	help := helpStyle.Render(m.helpLine())
-	return strings.Join([]string{
-		m.viewport.View(),
+	// 内联渲染：已结束的轮次已 Println 进终端原生回滚区（可原生滚动 / 框选复制），
+	// 这里只画 live 区——本轮进行中的 transcript（含底部工作行）+ 计划面板 + 输入区。
+	var parts []string
+	if body := m.renderTranscript(m.width); body != "" {
+		parts = append(parts, body)
+	}
+	if panel := m.planPanelView(); panel != "" {
+		parts = append(parts, panel)
+	}
+
+	// 等待权限确认时，用 y/n 提示框取代输入区。
+	if m.pendingPerm != nil {
+		parts = append(parts, m.permPromptView())
+		return strings.Join(parts, "\n")
+	}
+	parts = append(parts,
 		inputBorderStyle.Render(m.input.View()),
-		help,
-	}, "\n")
+		helpStyle.Render(m.helpLine()),
+	)
+	return strings.Join(parts, "\n")
+}
+
+// planMarkers 把任务状态映射成清单标记（对齐 agent_tools.statusMarkers）。
+var planMarkers = map[string]string{
+	"pending":     "[ ]",
+	"in_progress": "[>]",
+	"completed":   "[x]",
+}
+
+// planStyleFor 按任务状态选配色。
+func planStyleFor(status string) lipgloss.Style {
+	switch status {
+	case "completed":
+		return planDoneStyle
+	case "in_progress":
+		return planActiveStyle
+	default:
+		return planPendingStyle
+	}
+}
+
+// planPanelView 渲染计划面板：标题 + 每个任务一行（按状态分色）。无活动计划时返回空串。
+func (m *model) planPanelView() string {
+	if !m.hasActivePlan() {
+		return ""
+	}
+	innerW := m.width - 4 // 边框 2 + 左右 padding 2，留给文本的宽度
+	if innerW < 1 {
+		innerW = 1
+	}
+	var b strings.Builder
+	b.WriteString(planTitleStyle.Render("Plan"))
+	for _, it := range m.plan {
+		marker, ok := planMarkers[it.Status]
+		if !ok {
+			marker = "[ ]"
+		}
+		line := truncate(oneLine(marker+" "+it.Subject), innerW) // 截断防换行，保证行数与 height 一致
+		b.WriteString("\n" + planStyleFor(it.Status).Render(line))
+	}
+	return planBorderStyle.Width(m.width - 2).Render(b.String())
+}
+
+// permPromptView 渲染权限确认框：待确认的工具调用 + 原因 + 按键提示。
+func (m *model) permPromptView() string {
+	req := m.pendingPerm.req
+	desc := toolDescriptor(req.ToolName, req.RawArgs, 200)
+
+	var b strings.Builder
+	b.WriteString(permTitleStyle.Render("⚠ 需要确认") + "  " + toolStyle.Render(desc))
+	if req.Reason != "" {
+		b.WriteString("\n" + helpStyle.Render(req.Reason))
+	}
+	b.WriteString("\n" +
+		permKeyStyle.Render("y") + " 允许   " +
+		permKeyStyle.Render("n") + " 拒绝   " +
+		helpStyle.Render("esc 拒绝 · ctrl+c 中断本轮"))
+	return permBorderStyle.Width(m.width - 2).Render(b.String())
 }
 
 func (m *model) helpLine() string {
-	if m.running {
-		return "ctrl+c 中断 · ctrl+o 详细 · 滚轮/pgup/pgdn 滚动"
+	mode := ""
+	if m.perms != nil {
+		mode = "[" + modeLabel(m.perms.Mode()) + "] "
 	}
-	return `enter 发送 · \+enter/ctrl+j 换行 · ctrl+o 详细 · ctrl+l 清屏 · ctrl+c 退出 · 滚轮 滚动`
+	if m.running {
+		return mode + "ctrl+c 中断 · shift+tab 模式 · ctrl+o 详细"
+	}
+	return mode + `enter 发送 · \+enter 换行 · shift+tab 模式 · ctrl+o 详细 · ctrl+l 清屏 · ctrl+c 退出`
 }
 
 // ---- 渲染辅助 ----
