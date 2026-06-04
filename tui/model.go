@@ -108,6 +108,13 @@ type model struct {
 	thinkPending string // 尾部可能是半截标签的缓冲，留到下个分块拼合
 
 	plan []todoItem // 当前计划（todo_list 工具结果解析而来），常驻面板展示
+
+	sized bool // 是否已收到首个 WindowSizeMsg（首个不清屏，以保留 stdout 打印的启动横幅）
+
+	// 逐块刷入回滚区：已完成的条目/段落在生成途中即 Println 进终端原生回滚区（可滚轮上翻+复制），
+	// live 区只留正在写的尾巴。只在「段落边界」刷（每轮几次，非每 token），故不会拖垮渲染。
+	// asstMarkerShown 标记当前助手消息的「●」是否已随首段刷出。
+	asstMarkerShown bool
 }
 
 // todoItem 是 todo_list 工具结果里的一个任务项（与 agent_tools.TodoItem 同形）。
@@ -120,7 +127,13 @@ func newModel(ag *agent.ChatCompletionAgent, cm *client.ChatCompletionMessage, e
 	ta := textarea.New()
 	ta.Placeholder = `问点什么…（Enter 发送，\+Enter 或 Ctrl+J 换行）`
 	ta.ShowLineNumbers = false
-	ta.Prompt = "› "
+	// 只在第一行显示提示箭头，其余行用等宽空白对齐——多行输入不再出现一堆「›」。
+	ta.SetPromptFunc(2, func(lineIdx int) string {
+		if lineIdx == 0 {
+			return "› "
+		}
+		return "  "
+	})
 	ta.CharLimit = 0
 	ta.SetHeight(minInputHeight)
 	// 换行不走 textarea 原生绑定：ctrl+j 与 \+Enter 都在 handleKey 里显式处理，
@@ -145,6 +158,7 @@ func newModel(ag *agent.ChatCompletionAgent, cm *client.ChatCompletionMessage, e
 }
 
 func (m *model) Init() tea.Cmd {
+	// 横幅延到首个 WindowSizeMsg 再打印——那时才知道终端宽度，能据此选艺术字或紧凑版。
 	return tea.Batch(textarea.Blink, m.spinner.Tick, m.waitEvent())
 }
 
@@ -156,15 +170,22 @@ func (m *model) waitEvent() tea.Cmd {
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		first := !m.sized
+		m.sized = true
 		m.resize(msg.Width, msg.Height)
-		return m, nil
+		if first {
+			return m, nil // 首个尺寸事件（启动初始尺寸）不清屏，保留 stdout 打印的启动横幅
+		}
+		// 真正的缩放：清屏重绘——内联渲染下旧帧会因终端回流错位、残留多个输入框，清屏可消除
+		return m, tea.ClearScreen
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 
 	case agent.AgentEvent:
 		m.applyEvent(msg)
-		return m, m.waitEvent()
+		// 在段落边界把已完成块刷入回滚区（生成途中即可上翻查看），再继续监听
+		return m, tea.Batch(m.seal(), m.waitEvent())
 
 	case permissionAskMsg:
 		// 经 program.Send 注入：进入等待确认状态，渲染 y/n 提示框。
@@ -528,8 +549,64 @@ func (m *model) appendAsst(text string) {
 	if m.curAsstIdx < 0 {
 		m.entries = append(m.entries, entry{kind: entryAssistant, text: text})
 		m.curAsstIdx = len(m.entries) - 1
+		m.asstMarkerShown = false // 新助手消息：圆点尚未刷出
 	} else {
 		m.entries[m.curAsstIdx].text += text
+	}
+}
+
+// seal 把「已完成的队首条目」和「活动助手块里已成形的段落」刷入终端原生回滚区（tea.Println），
+// 只把正在写的尾巴留在 live 区——于是生成途中也能滚轮上翻看到目前为止的全部内容并框选复制。
+// 只在段落边界（splitFlushable）才真正渲染+打印，每轮仅几次；回滚区 append-only，从队首按序刷，
+// 遇到未完成块（运行中的工具）即停。
+func (m *model) seal() tea.Cmd {
+	var flushed []string
+	for len(m.entries) > 0 {
+		if m.curAsstIdx == 0 || m.curThinkIdx == 0 { // 活动块在队首
+			if m.curAsstIdx == 0 {
+				head, tail := splitFlushable(m.entries[0].text)
+				if strings.TrimSpace(head) != "" {
+					if s := m.renderAsstChunk(head, m.width); s != "" {
+						flushed = append(flushed, s)
+						m.asstMarkerShown = true
+					}
+					m.entries[0].text = tail
+				}
+			}
+			break
+		}
+		if m.entries[0].kind == entryTool && !m.entries[0].toolDone {
+			break // 队首是运行中的工具：等它结束再刷（保序）
+		}
+		if s := m.renderEntry(m.entries[0], m.width, true, false); s != "" {
+			flushed = append(flushed, s)
+		}
+		if m.entries[0].kind == entryAssistant {
+			m.asstMarkerShown = false // 整条助手消息刷完，下条重新显示圆点
+		}
+		m.popFrontEntry()
+	}
+	if len(flushed) == 0 {
+		return nil
+	}
+	return tea.Println(strings.Join(flushed, "\n"))
+}
+
+// popFrontEntry 删除队首条目，并同步修正按下标记录的游标（curAsstIdx/curThinkIdx/toolIdx）。
+func (m *model) popFrontEntry() {
+	m.entries = m.entries[1:]
+	if m.curAsstIdx >= 0 {
+		m.curAsstIdx--
+	}
+	if m.curThinkIdx >= 0 {
+		m.curThinkIdx--
+	}
+	for id, idx := range m.toolIdx {
+		if idx == 0 {
+			delete(m.toolIdx, id)
+		} else {
+			m.toolIdx[id] = idx - 1
+		}
 	}
 }
 
@@ -621,12 +698,13 @@ func (m *model) finishTurn(msg doneMsg) tea.Cmd {
 		})
 	}
 
-	// 本轮 transcript 刷入回滚区（此时 running 已为 false，renderTranscript 不含底部工作行），
-	// 再清空 live 区——下一帧 View 只剩计划面板与输入框。
-	out := m.renderTranscript(m.width)
+	// 把 live 区残留的尾巴（生成途中未到段落边界、未刷出的部分 + 计时/错误条目）刷入回滚区，再清空。
+	out := m.renderTranscript(m.width, true)
 	m.entries = nil
 	m.curAsstIdx = -1
 	m.curThinkIdx = -1
+	m.toolIdx = make(map[string]int)
+	m.asstMarkerShown = false
 	if strings.TrimSpace(out) == "" {
 		return nil
 	}

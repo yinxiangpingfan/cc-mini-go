@@ -24,104 +24,175 @@ func (m *model) relayout() {}
 // refreshViewport 旧 viewport 的内容刷新入口；内联渲染下 View 每次 Update 后自动重算，空操作。
 func (m *model) refreshViewport() {}
 
-// renderTranscript 把所有条目 + 底部工作行渲染成可滚动文本。
-func (m *model) renderTranscript(width int) string {
-	textWidth := width - 2 // 给行首的 2 字符标记（"● " / "› "）留位，避免溢出
+// renderEntry 把单个条目渲染成一个文本块（不含尾随换行）。返回 "" 表示该条目应跳过。
+// 助手正文 markdown 渲染策略：final（刷入回滚区）强制渲染；live 区里「正在写的那条」(active)
+// 按节流 markdown 实时渲染（≤8/s，不拖慢事件消费）；其余已完成块先用原文，待 finishTurn 统一渲染。
+func (m *model) renderEntry(e entry, width int, final, active bool) string {
+	textWidth := width - 2 // 给行首的 2 字符标记（"● " / "› "）留位
 	if textWidth < 1 {
 		textWidth = 1
 	}
-	wrap := lipgloss.NewStyle().Width(textWidth)
-	indent := lipgloss.NewStyle().Width(textWidth)
-	var b strings.Builder
-
-	for _, e := range m.entries {
-		switch e.kind {
-		case entryUser:
-			b.WriteString(userLabelStyle.Render("› ") + wrap.Render(e.text))
-			b.WriteString("\n\n")
-
-		case entryAssistant:
-			b.WriteString(agentLabelStyle.Render("● ") + wrap.Render(e.text))
-			b.WriteString("\n\n")
-
-		case entryThinking:
-			if m.verbose {
-				b.WriteString(thinkStyle.Render("✶ thinking"))
-				b.WriteString("\n")
-				b.WriteString(indent.Render(thinkStyle.Render(e.text)))
-				b.WriteString("\n\n")
+	switch e.kind {
+	case entryUser:
+		return userLabelStyle.Render("› ") + lipgloss.NewStyle().Width(textWidth).Render(e.text)
+	case entryAssistant:
+		txt := strings.TrimSpace(e.text)
+		if txt == "" {
+			return "" // 跳过只有空白的助手块（避免孤零零的圆点）
+		}
+		if final || active {
+			md := renderMarkdown(txt, textWidth, final)
+			if md == "" {
+				return ""
 			}
-
-		case entryTool:
-			mark := toolRunningStyle.Render("●")
-			if e.toolDone {
-				mark = toolDoneStyle.Render("●")
+			if m.asstMarkerShown {
+				return md // 圆点已随首段刷入回滚区：续写不重复「●」
 			}
-			// 详细模式下展示更完整的参数
-			argLimit := 72
-			if m.verbose {
-				argLimit = 200
-			}
-			b.WriteString(mark + " " + toolStyle.Render(toolDescriptor(e.toolName, e.toolArgs, argLimit)))
-			b.WriteString("\n")
-			if e.toolDone && e.text != "" {
-				b.WriteString(helpStyle.Render("  ⎿ " + e.text))
-				b.WriteString("\n")
-			}
-			b.WriteString("\n")
+			return agentLabelStyle.Render("●") + "\n" + md
+		}
+		return agentLabelStyle.Render("● ") + lipgloss.NewStyle().Width(textWidth).Render(txt)
+	case entryThinking:
+		txt := strings.TrimSpace(e.text)
+		if !m.verbose || txt == "" {
+			return ""
+		}
+		return thinkStyle.Render("✶ 思考") + "\n" + quoteBlock(txt, textWidth, thinkStyle)
+	case entryTool:
+		mark := toolRunningStyle.Render("●")
+		if e.toolDone {
+			mark = toolDoneStyle.Render("●")
+		}
+		argLimit := 72 // 详细模式下展示更完整的参数
+		if m.verbose {
+			argLimit = 200
+		}
+		desc := toolDescriptor(e.toolName, e.toolArgs, argLimit)
+		s := mark + " " + toolStyle.Render(clampCells(desc, textWidth))
+		if e.toolDone && e.text != "" {
+			s += "\n" + helpStyle.Render(clampCells("  ⎿ "+e.text, width))
+		}
+		return s
+	case entryTiming:
+		return timingStyle.Render(clampCells("✲ "+e.text, width))
+	case entryError:
+		return errStyle.Render(clampCells("✗ "+e.text, width))
+	case entryNotice:
+		return permTitleStyle.Render(clampCells("⚠ "+e.text, width))
+	}
+	return ""
+}
 
-		case entryTiming:
-			b.WriteString(timingStyle.Render("✲ " + e.text))
-			b.WriteString("\n\n")
+// renderAsstChunk 把一段已完成的助手正文按 markdown 渲染（force，准确），供逐块刷入回滚区。
+// 空白返回 ""；首段带「●」，marker 已显示则续写省略。
+func (m *model) renderAsstChunk(text string, width int) string {
+	textWidth := width - 2
+	if textWidth < 1 {
+		textWidth = 1
+	}
+	md := renderMarkdown(strings.TrimSpace(text), textWidth, true)
+	if md == "" {
+		return ""
+	}
+	if m.asstMarkerShown {
+		return md
+	}
+	return agentLabelStyle.Render("●") + "\n" + md
+}
 
-		case entryError:
-			b.WriteString(errStyle.Render("✗ " + e.text))
-			b.WriteString("\n\n")
-
-		case entryNotice:
-			b.WriteString(permTitleStyle.Render("⚠ " + e.text))
-			b.WriteString("\n\n")
+// splitFlushable 把流式助手正文切成「可安全刷出的完整部分 head」与「仍在写的尾巴 tail」。
+// 边界是「代码块之外的空行」：完整段落 / 闭合代码块才刷，未闭合的代码块整体留在 tail。
+func splitFlushable(text string) (head, tail string) {
+	lines := strings.Split(text, "\n")
+	inFence := false
+	lastBoundary := -1
+	for i, ln := range lines {
+		t := strings.TrimSpace(ln)
+		if strings.HasPrefix(t, "```") {
+			inFence = !inFence
+			continue
+		}
+		if !inFence && t == "" {
+			lastBoundary = i
 		}
 	}
+	if lastBoundary < 0 {
+		return "", text
+	}
+	return strings.Join(lines[:lastBoundary], "\n"), strings.Join(lines[lastBoundary+1:], "\n")
+}
+
+// renderTranscript 把当前条目 + 底部工作行渲染成文本。final 见 renderEntry。
+func (m *model) renderTranscript(width int, final bool) string {
+	var blocks []string
+	for i, e := range m.entries {
+		active := !final && i == m.curAsstIdx // 正在写的那条助手消息：live markdown
+		if s := m.renderEntry(e, width, final, active); s != "" {
+			blocks = append(blocks, s)
+		}
+	}
+	body := strings.Join(blocks, "\n")
 
 	// 底部工作行：重试倒计时优先，否则显示拟人化计时 spinner
 	if m.running {
+		var work string
 		if m.retrying {
-			b.WriteString(m.spinner.View() + " " + retryStyle.Render(m.retryCountdown()))
+			work = m.spinner.View() + " " + retryStyle.Render(m.retryCountdown())
 		} else {
 			elapsed := int(time.Since(m.startTime).Seconds())
 			label := fmt.Sprintf("%s… (%s · ctrl+c 中断)", workWords[m.workWord].ing, secs(elapsed))
-			b.WriteString(m.spinner.View() + " " + workStyle.Render(label))
+			work = m.spinner.View() + " " + workStyle.Render(label)
 		}
+		if body != "" {
+			body += "\n"
+		}
+		body += work
 	}
-
-	return strings.TrimRight(b.String(), "\n")
+	return body
 }
 
 func (m *model) View() string {
 	if !m.ready {
 		return "正在初始化…"
 	}
-	// 内联渲染：已结束的轮次已 Println 进终端原生回滚区（可原生滚动 / 框选复制），
-	// 这里只画 live 区——本轮进行中的 transcript（含底部工作行）+ 计划面板 + 输入区。
-	var parts []string
-	if body := m.renderTranscript(m.width); body != "" {
-		parts = append(parts, body)
-	}
+	// 先组装底部固定区（计划面板 + 输入/权限 + 帮助）。它的高度决定上方 live transcript 能占多少行。
+	var bottom []string
 	if panel := m.planPanelView(); panel != "" {
-		parts = append(parts, panel)
+		bottom = append(bottom, panel)
 	}
-
-	// 等待权限确认时，用 y/n 提示框取代输入区。
 	if m.pendingPerm != nil {
-		parts = append(parts, m.permPromptView())
-		return strings.Join(parts, "\n")
+		bottom = append(bottom, m.permPromptView())
+	} else {
+		bottom = append(bottom,
+			inputBorderStyle.Render(m.input.View()),
+			// 限制到终端宽度：帮助行过长会折行，打乱内联渲染器的行数统计、缩放时残留多个输入框。
+			helpStyle.MaxWidth(m.width).Render(m.helpLine()),
+		)
 	}
-	parts = append(parts,
-		inputBorderStyle.Render(m.input.View()),
-		helpStyle.Render(m.helpLine()),
-	)
-	return strings.Join(parts, "\n")
+	bottomStr := strings.Join(bottom, "\n")
+
+	// live transcript 占剩余高度；超出就只保留尾部（最新内容）。
+	// 这既避免 live 区高于屏幕、破坏内联渲染（缩放残留 / 长输出错位），也保证流式时总能看到最新进展。
+	// 已结束的轮次已 Println 进终端原生回滚区，可原生上下滚动 / 框选复制，不受此截断影响。
+	body := m.renderTranscript(m.width, false) // live 区渲染原文（快），markdown 留到刷入回滚区
+	if body != "" {
+		body = tailLines(body, m.height-lipgloss.Height(bottomStr)-1)
+	}
+	if body == "" {
+		return bottomStr
+	}
+	return body + "\n" + bottomStr
+}
+
+// tailLines 只保留 s 的最后 n 行（n<1 视为 1），把 live 区限制在可见高度内。
+func tailLines(s string, n int) string {
+	if n < 1 {
+		n = 1
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) <= n {
+		return s
+	}
+	return strings.Join(lines[len(lines)-n:], "\n")
 }
 
 // planMarkers 把任务状态映射成清单标记（对齐 agent_tools.statusMarkers）。
@@ -250,6 +321,32 @@ func (m *model) retryCountdown() string {
 	// 向上取整：剩 2.3s 显示 3s，逐秒 3→2→1
 	left := int((remain + time.Second - 1) / time.Second)
 	return fmt.Sprintf("重试 %d/%d，%s 后重连", m.retryAttempt, m.retryMax, secs(left))
+}
+
+// quoteBlock 把文本按 width 换行，每行前加一道暗色竖线，整体用 style 着色——用于思考块等次要内容。
+func quoteBlock(text string, width int, style lipgloss.Style) string {
+	inner := width - 2 // 留给 "▏ " 前缀
+	if inner < 1 {
+		inner = 1
+	}
+	wrapped := lipgloss.NewStyle().Width(inner).Render(text)
+	var b strings.Builder
+	for i, ln := range strings.Split(strings.TrimRight(wrapped, "\n"), "\n") {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(style.Render("▏ " + ln))
+	}
+	return b.String()
+}
+
+// clampCells 把文本按显示宽度（列）硬截断到 w 列，多字节/CJK 安全。
+// 用于单行摘要，防止超宽行被终端折行、进而打乱内联渲染器的行数统计（缩放时残留多个输入框）。
+func clampCells(s string, w int) string {
+	if w < 1 {
+		w = 1
+	}
+	return lipgloss.NewStyle().MaxWidth(w).Render(s)
 }
 
 func oneLine(s string) string {

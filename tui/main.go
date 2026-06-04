@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"golang.org/x/term"
 
 	"github.com/yinxiangpingfan/cc-mini-go/agent"
 	"github.com/yinxiangpingfan/cc-mini-go/client"
@@ -63,7 +64,15 @@ func run() error {
 		agent.WithBuiltinHooks(), // 内置 hook：会话欢迎语 + 工具审计（逻辑都在 agent/hooks_builtin.go）
 	)
 
-	// 4. 启动 Bubble Tea。不用 alt-screen、不捕获鼠标：transcript 走终端原生回滚区，
+	// 4. 启动横幅：在 Bubble Tea 接管终端之前直接打印到 stdout，干净地留在最顶部
+	//    （不走 tea.Println，避免与首帧渲染抢行导致首行被顶掉）。
+	w, _, _ := term.GetSize(int(os.Stdout.Fd()))
+	if w <= 0 {
+		w = 80
+	}
+	fmt.Println(bannerView(w))
+
+	// 5. 启动 Bubble Tea。不用 alt-screen、不捕获鼠标：transcript 走终端原生回滚区，
 	//    从而保留原生滚轮滚动与拖拽框选复制（已结束的轮次由 finishTurn 用 tea.Println 刷入）。
 	m := newModel(ag, cm, events, cf.Model, perms)
 	p := tea.NewProgram(m)

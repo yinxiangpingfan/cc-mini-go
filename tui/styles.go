@@ -50,4 +50,8 @@ var (
 	planDoneStyle    = lipgloss.NewStyle().Foreground(colorDone).Strikethrough(true) // 完成：绿+删除线
 	planActiveStyle  = lipgloss.NewStyle().Foreground(colorRetry).Bold(true)         // 进行中：黄+加粗
 	planPendingStyle = lipgloss.NewStyle().Foreground(colorSubtle)                   // 待办：暗灰
+
+	// 启动横幅：MaCode 艺术字用青色加粗，副标题用亮白加粗。
+	bannerArtStyle = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
+	bannerSubStyle = lipgloss.NewStyle().Foreground(colorAgent).Bold(true)
 )
