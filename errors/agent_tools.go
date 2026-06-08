@@ -59,4 +59,10 @@ var (
 	ErrMemoryNotExist = "memory '%s' does not exist. known memories: %s"
 	// ErrMemoryDelete 删除 memory 文件失败
 	ErrMemoryDelete = fmt.Errorf("delete memory failed")
+	// ErrTaskNotFound 任务不存在，使用时 fmt.Sprintf(ErrTaskNotFound, id)
+	ErrTaskNotFound = "task %d not found"
+	// ErrTaskWrite 写入任务文件失败
+	ErrTaskWrite = fmt.Errorf("write task failed")
+	// ErrTaskInvalidStatus 非法任务状态，使用时 fmt.Sprintf(ErrTaskInvalidStatus, status)
+	ErrTaskInvalidStatus = "invalid task status '%s', valid: pending, in_progress, completed, deleted"
 )

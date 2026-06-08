@@ -180,3 +180,23 @@ var GlobPrompt = `"Fast file pattern matching tool that works with any codebase 
         "- 'path' is the directory to search in; omit it to use the current working directory.\n"
         "- Returns matching file paths sorted by modification time (newest first), relative to the search path.\n"
         "- Use this when you need to find files by name patterns; use Grep to search file contents."`
+
+// TaskCreatePrompt 是 task_create 工具的描述（s12 持久化任务图）
+var TaskCreatePrompt = `"Create a new task in the persistent work graph. "
+        "Use this for complex multi-step goals that need dependency tracking. "
+        "For simple sequential steps in the current conversation, prefer todo_list instead."`
+
+// TaskUpdatePrompt 是 task_update 工具的描述
+var TaskUpdatePrompt = `"Update a task's status, owner, or dependencies. "
+        "When setting status to 'completed', all other tasks that were blocked by this task "
+        "are automatically unblocked. "
+        "Use addBlocks to declare that other tasks depend on this one (bidirectional linking is automatic). "
+        "Use addBlockedBy to declare that this task depends on others."`
+
+// TaskGetPrompt 是 task_get 工具的描述
+var TaskGetPrompt = `"Get full details of a task by ID, including its dependency information."`
+
+// TaskListPrompt 是 task_list 工具的描述
+var TaskListPrompt = `"List all tasks with status summary. Shows each task's status marker, "
+        "ID, subject, owner, and any blocking dependencies."`
+

@@ -34,6 +34,15 @@ func (a *ChatCompletionAgent) ToolInit(tools *map[string]tool.ToolFunc) []client
 	(*tools)[saveMemoryTool.Name] = saveMemoryTool.Func
 	deleteMemoryTool := tool.NewDeleteMemoryTool(tool.Memory)
 	(*tools)[deleteMemoryTool.Name] = deleteMemoryTool.Func
+	taskMgr := tool.NewTaskManager()
+	taskCreateTool := tool.NewTaskCreateTool(taskMgr)
+	(*tools)[taskCreateTool.Name] = taskCreateTool.Func
+	taskUpdateTool := tool.NewTaskUpdateTool(taskMgr)
+	(*tools)[taskUpdateTool.Name] = taskUpdateTool.Func
+	taskGetTool := tool.NewTaskGetTool(taskMgr)
+	(*tools)[taskGetTool.Name] = taskGetTool.Func
+	taskListTool := tool.NewTaskListTool(taskMgr)
+	(*tools)[taskListTool.Name] = taskListTool.Func
 	return []client.Tool{
 		timeNowTool.TimeNowInfoForLLm(),
 		readFileTool.ReadFileInfoForLLm(),
@@ -48,5 +57,10 @@ func (a *ChatCompletionAgent) ToolInit(tools *map[string]tool.ToolFunc) []client
 		globTool.GlobInfoForLLm(),
 		saveMemoryTool.SaveMemoryInfoForLLM(),
 		deleteMemoryTool.DeleteMemoryInfoForLLM(),
+		taskCreateTool.TaskCreateInfoForLLM(),
+		taskUpdateTool.TaskUpdateInfoForLLM(),
+		taskGetTool.TaskGetInfoForLLM(),
+		taskListTool.TaskListInfoForLLM(),
 	}
 }
+

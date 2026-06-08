@@ -67,6 +67,9 @@ func toolResultsDir() string { return filepath.Join(sessionStorageDir, "tool-res
 // transcriptDir 完整对话转录目录（会话级）
 func transcriptDir() string { return filepath.Join(sessionStorageDir, "transcripts") }
 
+// taskDir 持久化任务图目录（会话级，s12）
+func taskDir() string { return filepath.Join(sessionStorageDir, "tasks") }
+
 // defaultSessionStorageDir 计算 ~/.cc_mini_go/projects/<项目>/<会话> 绝对路径。
 // 取不到 home 时退回当前目录下的 .cc_mini_go，保证始终可写。
 func defaultSessionStorageDir() string {
