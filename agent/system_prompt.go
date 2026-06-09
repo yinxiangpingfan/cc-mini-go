@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yinxiangpingfan/cc-mini-go/agent_tools"
+	"github.com/yinxiangpingfan/cc-mini-go/agent_tools/ctxmgmt"
 	"github.com/yinxiangpingfan/cc-mini-go/prompt"
 )
 
@@ -38,7 +38,7 @@ func (a *ChatCompletionAgent) buildSystemPrompt(core string) string {
 
 // sectionSkills 轻量 skill 目录（发现层）：只放名称+描述，正文由模型按需 load_skill。
 func (a *ChatCompletionAgent) sectionSkills() string {
-	catalog := agent_tools.Skills.DescribeAvailable()
+	catalog := ctxmgmt.Skills.DescribeAvailable()
 	if catalog == "(no skills available)" {
 		return ""
 	}
@@ -47,7 +47,7 @@ func (a *ChatCompletionAgent) sectionSkills() string {
 
 // sectionMemory 跨会话记忆（读取层）：记忆很小且是长期方向，正文全部注入。
 func (a *ChatCompletionAgent) sectionMemory() string {
-	section := agent_tools.Memory.Describe()
+	section := ctxmgmt.Memory.Describe()
 	if section == "" {
 		return ""
 	}

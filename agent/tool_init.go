@@ -1,47 +1,51 @@
 package agent
 
 import (
-	tool "github.com/yinxiangpingfan/cc-mini-go/agent_tools"
+	"github.com/yinxiangpingfan/cc-mini-go/agent_tools/ctxmgmt"
+	"github.com/yinxiangpingfan/cc-mini-go/agent_tools/fileops"
+	"github.com/yinxiangpingfan/cc-mini-go/agent_tools/planning"
+	"github.com/yinxiangpingfan/cc-mini-go/agent_tools/shared"
+	"github.com/yinxiangpingfan/cc-mini-go/agent_tools/system"
 	"github.com/yinxiangpingfan/cc-mini-go/client"
 )
 
 // 注：system prompt 的组装（含 skill 目录、memory）已迁到 system_prompt.go 的 buildSystemPrompt 流水线。
 
-func (a *ChatCompletionAgent) ToolInit(tools *map[string]tool.ToolFunc) []client.Tool {
-	timeNowTool := tool.NewTimeNowTool()
+func (a *ChatCompletionAgent) ToolInit(tools *map[string]shared.ToolFunc) []client.Tool {
+	timeNowTool := system.NewTimeNowTool()
 	(*tools)[timeNowTool.Name] = timeNowTool.Func
-	readFileTool := tool.NewReadFile()
+	readFileTool := fileops.NewReadFile()
 	(*tools)[readFileTool.Name] = readFileTool.Func
-	writeFileTool := tool.NewWriteFileTool()
+	writeFileTool := fileops.NewWriteFileTool()
 	(*tools)[writeFileTool.Name] = writeFileTool.Func
-	baseTool := tool.NewBashTool()
+	baseTool := system.NewBashTool()
 	(*tools)[baseTool.Name] = baseTool.Func
-	todoListTool := tool.NewTodoListTool()
+	todoListTool := planning.NewTodoListTool()
 	(*tools)[todoListTool.Name] = todoListTool.Func
-	subAgentTool := tool.NewSubAgentTools(a.call, a.cf.Model)
+	subAgentTool := system.NewSubAgentTools(a.call, a.cf.Model)
 	(*tools)[subAgentTool.Name] = subAgentTool.Func
-	loadSkillTool := tool.NewLoadSkillTool(tool.Skills)
+	loadSkillTool := ctxmgmt.NewLoadSkillTool(ctxmgmt.Skills)
 	(*tools)[loadSkillTool.Name] = loadSkillTool.Func
-	compactTool := tool.NewCompactTool()
+	compactTool := ctxmgmt.NewCompactTool()
 	(*tools)[compactTool.Name] = compactTool.Func
-	editFileTool := tool.NewEditFileTool()
+	editFileTool := fileops.NewEditFileTool()
 	(*tools)[editFileTool.Name] = editFileTool.Func
-	grepTool := tool.NewGrepTool()
+	grepTool := fileops.NewGrepTool()
 	(*tools)[grepTool.Name] = grepTool.Func
-	globTool := tool.NewGlobTool()
+	globTool := fileops.NewGlobTool()
 	(*tools)[globTool.Name] = globTool.Func
-	saveMemoryTool := tool.NewSaveMemoryTool(tool.Memory)
+	saveMemoryTool := ctxmgmt.NewSaveMemoryTool(ctxmgmt.Memory)
 	(*tools)[saveMemoryTool.Name] = saveMemoryTool.Func
-	deleteMemoryTool := tool.NewDeleteMemoryTool(tool.Memory)
+	deleteMemoryTool := ctxmgmt.NewDeleteMemoryTool(ctxmgmt.Memory)
 	(*tools)[deleteMemoryTool.Name] = deleteMemoryTool.Func
-	taskMgr := tool.NewTaskManager()
-	taskCreateTool := tool.NewTaskCreateTool(taskMgr)
+	taskMgr := planning.NewTaskManager()
+	taskCreateTool := planning.NewTaskCreateTool(taskMgr)
 	(*tools)[taskCreateTool.Name] = taskCreateTool.Func
-	taskUpdateTool := tool.NewTaskUpdateTool(taskMgr)
+	taskUpdateTool := planning.NewTaskUpdateTool(taskMgr)
 	(*tools)[taskUpdateTool.Name] = taskUpdateTool.Func
-	taskGetTool := tool.NewTaskGetTool(taskMgr)
+	taskGetTool := planning.NewTaskGetTool(taskMgr)
 	(*tools)[taskGetTool.Name] = taskGetTool.Func
-	taskListTool := tool.NewTaskListTool(taskMgr)
+	taskListTool := planning.NewTaskListTool(taskMgr)
 	(*tools)[taskListTool.Name] = taskListTool.Func
 	return []client.Tool{
 		timeNowTool.TimeNowInfoForLLm(),
@@ -63,4 +67,3 @@ func (a *ChatCompletionAgent) ToolInit(tools *map[string]tool.ToolFunc) []client
 		taskListTool.TaskListInfoForLLM(),
 	}
 }
-

@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/yinxiangpingfan/cc-mini-go/agent"
-	tools "github.com/yinxiangpingfan/cc-mini-go/agent_tools"
+	tools "github.com/yinxiangpingfan/cc-mini-go/agent_tools/ctxmgmt"
 	"github.com/yinxiangpingfan/cc-mini-go/client"
 	"github.com/yinxiangpingfan/cc-mini-go/config"
 	"github.com/yinxiangpingfan/cc-mini-go/log"

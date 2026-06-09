@@ -1,6 +1,6 @@
 package agent
 
-import "github.com/yinxiangpingfan/cc-mini-go/agent_tools"
+import "github.com/yinxiangpingfan/cc-mini-go/agent_tools/ctxmgmt"
 
 // coldStartOverheadTokens 是冷启动估算时给 system prompt + 工具 schema 的粗略补偿。
 // 这两部分不在 allMsg 里（分别走 system 字段与 tools 字段），纯估算数不到，故补一笔固定值。
@@ -16,7 +16,7 @@ const coldStartOverheadTokens = 1000
 //     → 全量估算 + 固定开销补 system/schema。
 func (a *ChatCompletionAgent) estimateContextTokens(allMsg []any, sentCount int) int {
 	if a.lastPromptTokens > 0 && sentCount > 0 && sentCount <= len(allMsg) {
-		return a.lastPromptTokens + agent_tools.EstimateTokens(allMsg[sentCount:])
+		return a.lastPromptTokens + ctxmgmt.EstimateTokens(allMsg[sentCount:])
 	}
-	return agent_tools.EstimateTokens(allMsg) + coldStartOverheadTokens
+	return ctxmgmt.EstimateTokens(allMsg) + coldStartOverheadTokens
 }

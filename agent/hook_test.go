@@ -7,11 +7,11 @@ import (
 	"testing"
 
 	"github.com/yinxiangpingfan/cc-mini-go/agent/core"
-	"github.com/yinxiangpingfan/cc-mini-go/agent_tools"
+	"github.com/yinxiangpingfan/cc-mini-go/agent_tools/shared"
 )
 
 // fakeTool 返回固定输出，并通过 ran 记录是否真的被执行（验证拦截不执行）。
-func fakeTool(out string, ran *bool) agent_tools.ToolFunc {
+func fakeTool(out string, ran *bool) shared.ToolFunc {
 	return func(context.Context, map[string]any) string {
 		if ran != nil {
 			*ran = true

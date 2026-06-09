@@ -4,7 +4,9 @@ import (
 	"context"
 
 	"github.com/yinxiangpingfan/cc-mini-go/agent/core"
-	"github.com/yinxiangpingfan/cc-mini-go/agent_tools"
+	"github.com/yinxiangpingfan/cc-mini-go/agent_tools/ctxmgmt"
+	"github.com/yinxiangpingfan/cc-mini-go/agent_tools/fileops"
+	"github.com/yinxiangpingfan/cc-mini-go/agent_tools/shared"
 )
 
 // Hook 系统接线层（s08 第 2 步）：把纯插件机制 core.HookRunner 接进工具循环。
@@ -30,7 +32,7 @@ func (a *ChatCompletionAgent) runHook(event string, payload map[string]any) core
 // 返回工具结果 content、可能的图片（imageURI/isImage），以及需要在本轮所有工具结果之后
 // 再注入的补充消息 injected（来自 exit 2）。被拦截时不执行工具，但仍返回一条配对的 content。
 func (a *ChatCompletionAgent) execToolWithHooks(
-	ctx context.Context, toolID, name, rawArgs string, args map[string]any, f agent_tools.ToolFunc,
+	ctx context.Context, toolID, name, rawArgs string, args map[string]any, f shared.ToolFunc,
 ) (content, imageURI string, isImage bool, injected []string) {
 	// 1. PreToolUse：执行前的扩展点。拦截即返回配对的 tool 结果、跳过执行。
 	pre := a.runHook(core.HookPreToolUse, map[string]any{"tool_name": name, "input": args})
@@ -47,8 +49,8 @@ func (a *ChatCompletionAgent) execToolWithHooks(
 	}
 
 	// 3. 执行工具：大结果落盘只留预览；图片结果拆成「文字摘要 + data URI」。
-	res := agent_tools.PersistLargeOutput(name, toolID, safeToolCall(ctx, name, f, args))
-	content, imageURI, isImage = agent_tools.SplitImageResult(res)
+	res := ctxmgmt.PersistLargeOutput(name, toolID, safeToolCall(ctx, name, f, args))
+	content, imageURI, isImage = fileops.SplitImageResult(res)
 
 	// 4. PostToolUse：执行后的扩展点，可追加一条补充说明给模型。
 	post := a.runHook(core.HookPostToolUse, map[string]any{"tool_name": name, "input": args, "output": content})

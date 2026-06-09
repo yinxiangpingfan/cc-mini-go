@@ -9,7 +9,7 @@ import (
 	"os"
 	"testing"
 
-	tools "github.com/yinxiangpingfan/cc-mini-go/agent_tools"
+	tools "github.com/yinxiangpingfan/cc-mini-go/agent_tools/system"
 	"github.com/yinxiangpingfan/cc-mini-go/client"
 	"github.com/yinxiangpingfan/cc-mini-go/config"
 	"github.com/yinxiangpingfan/cc-mini-go/log"

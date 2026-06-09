@@ -7,7 +7,8 @@ import (
 	"time"
 
 	"github.com/yinxiangpingfan/cc-mini-go/agent/core"
-	"github.com/yinxiangpingfan/cc-mini-go/agent_tools"
+	"github.com/yinxiangpingfan/cc-mini-go/agent_tools/ctxmgmt"
+	"github.com/yinxiangpingfan/cc-mini-go/agent_tools/shared"
 	"github.com/yinxiangpingfan/cc-mini-go/client"
 	"github.com/yinxiangpingfan/cc-mini-go/config"
 	"github.com/yinxiangpingfan/cc-mini-go/errors"
@@ -43,7 +44,7 @@ func (a *ChatCompletionAgent) microcompactArmed() bool {
 	if a.lastActivityAt.IsZero() {
 		return false
 	}
-	return time.Since(a.lastActivityAt) >= agent_tools.GapThreshold
+	return time.Since(a.lastActivityAt) >= ctxmgmt.GapThreshold
 }
 
 // markActivity 记录本次对话结束时刻，作为下次时间闸的基准。
@@ -74,14 +75,14 @@ func (a *ChatCompletionAgent) Agent(ctx context.Context, messages []any, system 
 	//定义信息：拷贝一份，避免就地改写调用方持有的历史切片
 	allMsg := append([]any(nil), messages...)
 	//存储工具信息与调用函数
-	tools := make(map[string]agent_tools.ToolFunc)
+	tools := make(map[string]shared.ToolFunc)
 	clientTool := a.ToolInit(&tools)
 	//把 system prompt 组装成分段流水线：core + skills + memory + CLAUDE.md + 动态环境（s10）
 	system = a.buildSystemPrompt(system)
 	//上下文压缩状态（跨轮）
-	compactState := agent_tools.NewCompactState()
+	compactState := ctxmgmt.NewCompactState()
 	//会话转录：整段对话持续以 jsonl 落盘，与压缩解耦
-	transcript := agent_tools.NewSessionTranscript()
+	transcript := ctxmgmt.NewSessionTranscript()
 	//任意返回路径都把最后的消息补写入转录
 	defer func() { _ = transcript.Flush(allMsg) }()
 	//记录本次对话结束时刻，供下次 microcompact 时间闸判定
@@ -104,25 +105,25 @@ func (a *ChatCompletionAgent) Agent(ctx context.Context, messages []any, system 
 		// microcompact 时间闸：仅在「跨轮空闲超阈值」时于首轮压一次旧工具结果；
 		// 活跃会话内（轮间秒级）不压——对齐源码，避免读 6 个文件就清掉第 1 个
 		if turn == 0 && a.microcompactArmed() {
-			allMsg = agent_tools.MicroCompact(allMsg)
+			allMsg = ctxmgmt.MicroCompact(allMsg)
 		}
 		// 整体过大才做完整压缩（按 token 估算 vs 由窗口推导的自动压缩阈值，每轮判断）
-		if a.estimateContextTokens(allMsg, sentCount) > agent_tools.AutoCompactThreshold(a.cf.ContextWindow()) {
-			allMsg = agent_tools.CompactHistory(ctx, a.call, a.cf.Model, allMsg, compactState, "")
+		if a.estimateContextTokens(allMsg, sentCount) > ctxmgmt.AutoCompactThreshold(a.cf.ContextWindow()) {
+			allMsg = ctxmgmt.CompactHistory(ctx, a.call, a.cf.Model, allMsg, compactState, "")
 			a.lastPromptTokens = 0 // 历史被重写，旧基线失效，待下次调用重新校准
 		}
 
 		// 本轮计数 +1（计划已多少轮未更新）
-		agent_tools.ToDoList.MU.Lock()
-		if len(agent_tools.ToDoList.Items) > 0 {
-			agent_tools.ToDoList.RoundsSinceUpdate++
+		shared.ToDoList.MU.Lock()
+		if len(shared.ToDoList.Items) > 0 {
+			shared.ToDoList.RoundsSinceUpdate++
 		}
-		agent_tools.ToDoList.MU.Unlock()
+		shared.ToDoList.MU.Unlock()
 
 		// 检查是否需要刷新计划
-		agent_tools.ToDoList.MU.RLock()
-		needReminder := agent_tools.ToDoList.RoundsSinceUpdate >= 3
-		agent_tools.ToDoList.MU.RUnlock()
+		shared.ToDoList.MU.RLock()
+		needReminder := shared.ToDoList.RoundsSinceUpdate >= 3
+		shared.ToDoList.MU.RUnlock()
 		if needReminder {
 			reminder := a.call.Cm.NewUserMessage("<reminder>Refresh your plan before continuing.</reminder>")
 			allMsg = append(allMsg, reminder)
@@ -137,7 +138,7 @@ func (a *ChatCompletionAgent) Agent(ctx context.Context, messages []any, system 
 				rec.compactAttempts++
 				a.noteRecovery("🗜 " + why + "，压缩后重试")
 				_ = transcript.Flush(allMsg)
-				allMsg = agent_tools.CompactHistory(ctx, a.call, a.cf.Model, allMsg, compactState, "")
+				allMsg = ctxmgmt.CompactHistory(ctx, a.call, a.cf.Model, allMsg, compactState, "")
 				a.lastPromptTokens = 0
 				continue
 			}
@@ -167,7 +168,7 @@ func (a *ChatCompletionAgent) Agent(ctx context.Context, messages []any, system 
 				a.emit(AgentEvent{Type: EventContent, Text: s})
 			}
 			//检测本轮是否请求手动压缩
-			manualCompact, compactFocus := agent_tools.DetectManualCompact(res.Choices[0].Message.ToolCalls)
+			manualCompact, compactFocus := ctxmgmt.DetectManualCompact(res.Choices[0].Message.ToolCalls)
 			var wg sync.WaitGroup
 			var mu sync.Mutex
 			var imageURIs []string    // 图片工具结果拆出的 data URI，待工具结果全部就位后再追加
@@ -206,7 +207,7 @@ func (a *ChatCompletionAgent) Agent(ctx context.Context, messages []any, system 
 			//手动压缩与自动压缩复用同一条机制（压缩前先把本轮消息落盘）
 			if manualCompact {
 				_ = transcript.Flush(allMsg)
-				allMsg = agent_tools.CompactHistory(ctx, a.call, a.cf.Model, allMsg, compactState, compactFocus)
+				allMsg = ctxmgmt.CompactHistory(ctx, a.call, a.cf.Model, allMsg, compactState, compactFocus)
 			}
 		} else {
 			//没有工具调用，本轮是最终文本
