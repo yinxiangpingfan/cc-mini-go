@@ -153,6 +153,7 @@ func (a *ChatCompletionAgent) StreamAgent(ctx context.Context, messages []any, s
 			reminder := a.call.Cm.NewUserMessage("<reminder>Refresh your plan before continuing.</reminder>")
 			allMsg = append(allMsg, reminder)
 		}
+		allMsg = a.injectRuntimeNotifications(allMsg)
 
 		// 流式 LLM 调用：自动重试限流/5xx 与未建连的网络错误
 		sentCount = len(allMsg) // 记录本次发送边界，供下轮估算「新增尾巴」

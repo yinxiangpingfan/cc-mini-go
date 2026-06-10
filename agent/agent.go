@@ -9,6 +9,7 @@ import (
 	"github.com/yinxiangpingfan/cc-mini-go/agent/core"
 	"github.com/yinxiangpingfan/cc-mini-go/agent_tools/ctxmgmt"
 	"github.com/yinxiangpingfan/cc-mini-go/agent_tools/shared"
+	"github.com/yinxiangpingfan/cc-mini-go/agent_tools/system"
 	"github.com/yinxiangpingfan/cc-mini-go/client"
 	"github.com/yinxiangpingfan/cc-mini-go/config"
 	"github.com/yinxiangpingfan/cc-mini-go/errors"
@@ -34,6 +35,9 @@ type ChatCompletionAgent struct {
 	lastActivityAt time.Time  // 上次对话结束时刻，作为 microcompact 时间闸的基准
 
 	lastPromptTokens int // 上次 API 报告的 prompt_tokens（token 预算的权威基线，0=本轮还没调过/已因压缩失效）
+
+	background *system.BackgroundManager // s13：后台运行槽位 + 完成通知队列
+	cron       *system.CronScheduler     // s14：定时调度 + 触发通知队列
 }
 
 // microcompactArmed 时间闸：仅当距上次活动 >= GapThreshold（prompt cache 大概率已失效）
@@ -56,8 +60,10 @@ func (a *ChatCompletionAgent) markActivity() {
 
 func NewChatCompletionAgent(cf *config.Config, call *client.Call, opts ...AgentOption) *ChatCompletionAgent {
 	a := &ChatCompletionAgent{
-		cf:   cf,
-		call: call,
+		cf:         cf,
+		call:       call,
+		background: system.NewBackgroundManager(),
+		cron:       system.NewCronScheduler(),
 	}
 	for _, opt := range opts {
 		opt(a)
@@ -66,7 +72,37 @@ func NewChatCompletionAgent(cf *config.Config, call *client.Call, opts ...AgentO
 	if a.builtinHooks {
 		a.registerBuiltinHooks()
 	}
+	if a.cron != nil {
+		a.cron.Start()
+	}
 	return a
+}
+
+func (a *ChatCompletionAgent) injectBackgroundNotifications(allMsg []any) []any {
+	if a.background == nil {
+		return allMsg
+	}
+	text := system.FormatBackgroundNotifications(a.background.DrainNotifications())
+	if text == "" {
+		return allMsg
+	}
+	return append(allMsg, *a.call.Cm.NewUserMessage(text))
+}
+
+func (a *ChatCompletionAgent) injectRuntimeNotifications(allMsg []any) []any {
+	if a.background != nil {
+		text := system.FormatBackgroundNotifications(a.background.DrainNotifications())
+		if text != "" {
+			allMsg = append(allMsg, *a.call.Cm.NewUserMessage(text))
+		}
+	}
+	if a.cron != nil {
+		text := system.FormatCronNotifications(a.cron.DrainNotifications())
+		if text != "" {
+			allMsg = append(allMsg, *a.call.Cm.NewUserMessage(text))
+		}
+	}
+	return allMsg
 }
 
 // 非流式对话请求。messages 为完整历史（异构 []any），进出同型以便调用方闭环回传。
@@ -128,6 +164,7 @@ func (a *ChatCompletionAgent) Agent(ctx context.Context, messages []any, system 
 			reminder := a.call.Cm.NewUserMessage("<reminder>Refresh your plan before continuing.</reminder>")
 			allMsg = append(allMsg, reminder)
 		}
+		allMsg = a.injectRuntimeNotifications(allMsg)
 
 		// LLM 调用：自动重试网络错误与限流/5xx，不可重试错误直接返回
 		sentCount = len(allMsg) // 记录本次发送边界，供下轮估算「新增尾巴」

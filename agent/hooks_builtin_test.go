@@ -1,11 +1,26 @@
 package agent
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/yinxiangpingfan/cc-mini-go/agent/core"
+	"github.com/yinxiangpingfan/cc-mini-go/agent_tools/shared"
 	"github.com/yinxiangpingfan/cc-mini-go/config"
 )
+
+func withAgentTempStorage(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	oldProject := shared.ProjectStorageDir
+	oldSession := shared.SessionStorageDir
+	shared.ProjectStorageDir = dir
+	shared.SessionStorageDir = filepath.Join(dir, "session")
+	t.Cleanup(func() {
+		shared.ProjectStorageDir = oldProject
+		shared.SessionStorageDir = oldSession
+	})
+}
 
 // SessionStart 由 sessionOnce 守护：多次调用只触发一次。
 func TestFireSessionStart_FiresOnce(t *testing.T) {
@@ -27,9 +42,11 @@ func TestFireSessionStart_FiresOnce(t *testing.T) {
 
 // WithBuiltinHooks 注册内置 hook：SessionStart 触发后向 UI 发出一条 EventHookNotice。
 func TestWithBuiltinHooks_EmitsSessionNotice(t *testing.T) {
+	withAgentTempStorage(t)
 	ch := make(chan AgentEvent, 8)
 	a := NewChatCompletionAgent(&config.Config{}, nil,
 		WithEventChannel(ch), WithBuiltinHooks())
+	t.Cleanup(func() { a.cron.Stop() })
 
 	a.fireSessionStart()
 
@@ -45,7 +62,9 @@ func TestWithBuiltinHooks_EmitsSessionNotice(t *testing.T) {
 
 // 内置审计 hook（PostToolUse）只观察、不拦截。
 func TestBuiltinAuditHook_DoesNotBlock(t *testing.T) {
+	withAgentTempStorage(t)
 	a := NewChatCompletionAgent(&config.Config{}, nil, WithBuiltinHooks())
+	t.Cleanup(func() { a.cron.Stop() })
 	got := a.runHook(core.HookPostToolUse, map[string]any{"tool_name": "bash", "output": "ok"})
 	if got.ExitCode != core.HookContinue {
 		t.Fatalf("audit hook should observe only, got exit=%d", got.ExitCode)
@@ -54,6 +73,7 @@ func TestBuiltinAuditHook_DoesNotBlock(t *testing.T) {
 
 // 内置 hook 可叠加到自定义 runner 上：WithHooks + WithBuiltinHooks 同时生效。
 func TestWithBuiltinHooks_StacksOnCustomRunner(t *testing.T) {
+	withAgentTempStorage(t)
 	custom := core.NewHookRunner()
 	customRan := false
 	custom.Register(core.HookSessionStart, func(map[string]any) core.HookResult {
@@ -63,6 +83,7 @@ func TestWithBuiltinHooks_StacksOnCustomRunner(t *testing.T) {
 	ch := make(chan AgentEvent, 8)
 	a := NewChatCompletionAgent(&config.Config{}, nil,
 		WithEventChannel(ch), WithHooks(custom), WithBuiltinHooks())
+	t.Cleanup(func() { a.cron.Stop() })
 
 	a.fireSessionStart()
 

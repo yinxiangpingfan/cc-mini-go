@@ -200,3 +200,24 @@ var TaskGetPrompt = `"Get full details of a task by ID, including its dependency
 var TaskListPrompt = `"List all tasks with status summary. Shows each task's status marker, "
         "ID, subject, owner, and any blocking dependencies."`
 
+// BackgroundRunPrompt 是 background_run 工具的描述（s13 后台运行槽位）
+var BackgroundRunPrompt = `"Run a long-running shell command in the background and return immediately with a task_id.\n\n"
+        "Use this for slow commands such as tests, builds, installs, or code generation where the main loop "
+        "should continue instead of blocking. The full output is written to output_file; completion is reported "
+        "later as a short <background-results> notification. Use read_file on output_file if you need the full log."`
+
+// CheckBackgroundPrompt 是 check_background 工具的描述
+var CheckBackgroundPrompt = `"Check background task status. Pass task_id to inspect one task, or omit it to list all "
+        "runtime background tasks in this session. Background tasks are runtime execution slots, not persistent task-board records."`
+
+// CronCreatePrompt 是 cron_create 工具的描述（s14 定时调度）
+var CronCreatePrompt = `"Schedule a future prompt with a 5-field cron expression: minute hour day-of-month month day-of-week.\n\n"
+        "Use this when work should begin later, such as recurring checks or one-shot reminders. "
+        "The scheduled prompt is injected into the main conversation when it fires; it does not run a command directly. "
+        "Set recurring=false for one-shot schedules. Set durable=true only when the schedule should survive process restart."`
+
+// CronDeletePrompt 是 cron_delete 工具的描述
+var CronDeletePrompt = `"Delete a scheduled cron task by ID. Use this when the user cancels a reminder or recurring schedule."`
+
+// CronListPrompt 是 cron_list 工具的描述
+var CronListPrompt = `"List scheduled cron tasks, including cron expression, recurrence mode, persistence mode, age, and prompt preview."`

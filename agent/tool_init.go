@@ -20,6 +20,16 @@ func (a *ChatCompletionAgent) ToolInit(tools *map[string]shared.ToolFunc) []clie
 	(*tools)[writeFileTool.Name] = writeFileTool.Func
 	baseTool := system.NewBashTool()
 	(*tools)[baseTool.Name] = baseTool.Func
+	backgroundRunTool := system.NewBackgroundRunTool(a.background)
+	(*tools)[backgroundRunTool.Name] = backgroundRunTool.Func
+	checkBackgroundTool := system.NewCheckBackgroundTool(a.background)
+	(*tools)[checkBackgroundTool.Name] = checkBackgroundTool.Func
+	cronCreateTool := system.NewCronCreateTool(a.cron)
+	(*tools)[cronCreateTool.Name] = cronCreateTool.Func
+	cronDeleteTool := system.NewCronDeleteTool(a.cron)
+	(*tools)[cronDeleteTool.Name] = cronDeleteTool.Func
+	cronListTool := system.NewCronListTool(a.cron)
+	(*tools)[cronListTool.Name] = cronListTool.Func
 	todoListTool := planning.NewTodoListTool()
 	(*tools)[todoListTool.Name] = todoListTool.Func
 	subAgentTool := system.NewSubAgentTools(a.call, a.cf.Model)
@@ -52,6 +62,11 @@ func (a *ChatCompletionAgent) ToolInit(tools *map[string]shared.ToolFunc) []clie
 		readFileTool.ReadFileInfoForLLm(),
 		writeFileTool.WriteFileInfoForLLm(),
 		baseTool.BashToolForLLM(),
+		backgroundRunTool.BackgroundRunInfoForLLM(),
+		checkBackgroundTool.CheckBackgroundInfoForLLM(),
+		cronCreateTool.CronCreateInfoForLLM(),
+		cronDeleteTool.CronDeleteInfoForLLM(),
+		cronListTool.CronListInfoForLLM(),
 		todoListTool.TodoListInfoLLm(),
 		subAgentTool.SubAgentInfoForLLM(),
 		loadSkillTool.LoadSkillInfoForLLM(),

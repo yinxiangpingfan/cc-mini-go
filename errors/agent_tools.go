@@ -65,4 +65,16 @@ var (
 	ErrTaskWrite = fmt.Errorf("write task failed")
 	// ErrTaskInvalidStatus 非法任务状态，使用时 fmt.Sprintf(ErrTaskInvalidStatus, status)
 	ErrTaskInvalidStatus = "invalid task status '%s', valid: pending, in_progress, completed, deleted"
+	// ErrBackgroundTaskNotFound 后台任务不存在，使用时 fmt.Sprintf(ErrBackgroundTaskNotFound, id)
+	ErrBackgroundTaskNotFound = "background task %s not found"
+	// ErrBackgroundTaskWrite 写入后台任务记录或日志失败
+	ErrBackgroundTaskWrite = fmt.Errorf("write background task failed")
+	// ErrBackgroundTaskExec 后台命令无法启动或执行失败
+	ErrBackgroundTaskExec = fmt.Errorf("background command execution failed")
+	// ErrCronTaskNotFound 定时任务不存在，使用时 fmt.Sprintf(ErrCronTaskNotFound, id)
+	ErrCronTaskNotFound = "cron task %s not found"
+	// ErrCronTaskWrite 写入定时任务文件失败
+	ErrCronTaskWrite = fmt.Errorf("write cron task failed")
+	// ErrCronInvalidExpr cron 表达式非法，使用时 fmt.Sprintf(ErrCronInvalidExpr, expr)
+	ErrCronInvalidExpr = "invalid cron expression '%s'"
 )
